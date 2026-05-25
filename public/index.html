@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -405,6 +406,17 @@ body::before {
 
 /* STRATEGY */
 .strategy-card { background: linear-gradient(135deg, rgba(191,90,242,0.06) 0%, rgba(91,127,255,0.04) 100%); border: 1px solid rgba(191,90,242,0.15); border-radius: 16px; padding: 22px 26px; }
+.exito-card { background: linear-gradient(135deg, rgba(48,209,88,0.06) 0%, rgba(255,159,10,0.04) 100%); border: 1px solid rgba(48,209,88,0.18); border-radius: 16px; padding: 22px 26px; margin: 16px 0; }
+.exito-label { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; color: var(--green); text-transform: uppercase; margin-bottom: 12px; }
+.exito-hipotesis { font-size: 15px; color: var(--text); font-weight: 600; line-height: 1.5; margin-bottom: 16px; }
+.exito-metricas { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 16px; padding: 14px; background: rgba(255,255,255,0.02); border-radius: 10px; }
+.exito-metrica-label { font-size: 10px; font-weight: 600; letter-spacing: 0.08em; color: var(--text-tertiary); text-transform: uppercase; margin-bottom: 4px; }
+.exito-metrica-valor { font-size: 14px; color: var(--text); font-weight: 600; }
+.exito-reglas-label { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 10px; }
+.exito-regla { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; background: rgba(255,255,255,0.03); border-radius: 8px; border-left: 3px solid var(--orange); margin-bottom: 8px; }
+.exito-regla-num { font-size: 11px; font-weight: 700; color: var(--orange); flex-shrink: 0; padding-top: 1px; }
+.exito-regla-texto { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.exito-regla-texto strong { color: var(--text); font-weight: 600; }
 .strategy-label { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--purple); margin-bottom: 10px; }
 .strategy-text { font-size: 14px; color: var(--text-secondary); line-height: 1.8; text-align: justify; }
 .strategy-text strong { color: var(--text); font-weight: 600; }
@@ -993,6 +1005,7 @@ body::before {
     </button>
     <div class="brief-status" id="briefStatus"></div>
     <div class="scope-banner" id="scopeBanner"></div>
+    <div class="scope-banner" id="competitionLevelBanner"></div>
   </div>
 
   <div class="sep" style="margin:12px 0"></div>
@@ -1204,6 +1217,34 @@ body::before {
           <div class="chip" onclick="toggleChip(this,'blue')">Gaming</div>
           <div class="chip" onclick="toggleChip(this,'blue')">Moda</div>
         </div>
+      </div>
+      <div class="form-field">
+        <div class="field-label">
+          Comportamientos de compra
+          <span style="font-size:9px;padding:2px 7px;border-radius:10px;font-weight:600;background:rgba(255,255,255,0.06);color:var(--text-tertiary);border:1px solid var(--border)">Opcional</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;line-height:1.6">
+          Meta y Google permiten segmentar por comportamiento de compra reciente. Esto baja el CPM hasta 40% al mostrar el anuncio solo a personas en momento de decision activa.
+        </div>
+        <div class="tag-group" id="comportamientosChips">
+          <div class="chip" onclick="toggleChip(this,'blue')" data-comp="comprador_frecuente">Comprador frecuente online</div>
+          <div class="chip" onclick="toggleChip(this,'blue')" data-comp="busqueda_activa">En busqueda activa</div>
+          <div class="chip" onclick="toggleChip(this,'blue')" data-comp="early_adopter">Early adopter</div>
+          <div class="chip" onclick="toggleChip(this,'blue')" data-comp="precio_sensible">Sensible al precio / ofertas</div>
+          <div class="chip" onclick="toggleChip(this,'blue')" data-comp="premium">Buscador de premium / lujo</div>
+          <div class="chip" onclick="toggleChip(this,'blue')" data-comp="local">Frecuenta tiendas locales</div>
+          <div class="chip" onclick="toggleChip(this,'blue')" data-comp="recurrente">Cliente recurrente del rubro</div>
+        </div>
+      </div>
+      <div class="form-field">
+        <div class="field-label">
+          Intereses especificos
+          <span style="font-size:9px;padding:2px 7px;border-radius:10px;font-weight:600;background:rgba(255,255,255,0.06);color:var(--text-tertiary);border:1px solid var(--border)">Opcional</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;line-height:1.6">
+          Escribe intereses concretos relevantes a tu producto separados por coma. Ej: "running, marathon, fitness wear" o "decoracion minimalista, plantas de interior, organizacion del hogar". Mas especifico = audiencia mas chica pero con mayor intencion de compra.
+        </div>
+        <input type="text" class="field-input" id="interesesEspecificos" placeholder="Ej: running, fitness, marathon, ropa deportiva">
       </div>
       <div class="form-field">
         <div class="field-label">
@@ -1652,6 +1693,8 @@ function buildBriefScore(brief, parsed) {
   // Antes el scoring sumaba 2 puntos solo por tener algun texto en propuesta_valor,
   // sin importar si describia el diferencial o solo lo que hace el producto.
   // Ahora distinguimos: descripcion generica (1 punto) vs diferencial real (2 puntos).
+  // FIX (2026-05 v2): Cuando es descriptive, mostramos una pregunta guiada concreta
+  // segun la categoria, no un mensaje generico.
   var pvScore = 0;
   if (parsed && parsed.propuesta_valor) {
     var pvQuality = assessPropuestaValor(parsed.propuesta_valor);
@@ -1659,7 +1702,8 @@ function buildBriefScore(brief, parsed) {
       pvScore = 2;
     } else if (pvQuality === 'descriptive') {
       pvScore = 1;
-      tips.push('Tu propuesta de valor describe que haces, no que te hace diferente. Agrega el diferencial real.');
+      var preguntas = preguntasGuiadasDiferencial(parsed && parsed.categoria);
+      tips.push('Tu propuesta de valor es generica. Pregunta clave: ' + preguntas[0]);
     } else {
       pvScore = 0;
       tips.push('Describe que hace diferente a tu producto');
@@ -1700,45 +1744,132 @@ function buildBriefScore(brief, parsed) {
 //     mecanica especifica, target nicho, etc.) -> 2 puntos
 //   - 'descriptive': solo describe que hace el producto sin diferenciador -> 1 punto
 //   - 'empty': vacio o muy corto -> 0 puntos
+// FIX (2026-05 v2): Validador semantico mas estricto.
+// Antes: "Variedad de zapatillas a precios competitivos" pasaba como 'differential'
+// porque no tenia generic starter y tenia >40 chars (caia en fallback permisivo).
+// Ahora: detectamos cliches de marketing vacios ("precios competitivos", "amplia variedad",
+// "alta calidad") como anti-patterns. El fallback es 'descriptive', no 'differential'.
+// Solo es 'differential' si tiene un marcador real de diferenciacion verificable.
 function assessPropuestaValor(pv) {
   if (!pv) return 'empty';
   var text = pv.trim().toLowerCase();
   if (text.length < 15) return 'empty';
 
-  // Palabras que indican diferenciacion real
-  var differentialKeywords = [
-    'sin ', 'solo ', 'unico', 'unica', 'primero', 'primera',
-    'mas rapido', 'mas barato', 'mas economico', 'mas seguro',
-    '48 horas', '24 horas', 'al instante', 'mismo dia',
-    'garantia', 'gratis', 'incluye', 'sin costo',
-    'a diferencia', 'mientras que', 'en lugar de', 'no como',
-    'certificad', 'patentado', 'exclusivo', 'especializa',
-    'en zonas rurales', 'en regiones', 'cobertura nacional',
-    '%', 'menor precio', 'mejor precio'
+  // ANTI-PATTERNS: cliches de marketing que NO son diferenciadores reales.
+  // Si la propuesta consiste principalmente en estos, es descriptive aunque sea larga.
+  var marketingCliches = [
+    'precios competitivos', 'precio competitivo',
+    'amplia variedad', 'gran variedad', 'mucha variedad',
+    'alta calidad', 'buena calidad', 'la mejor calidad',
+    'excelente servicio', 'buen servicio', 'gran servicio',
+    'mejores precios', 'mejor precio del mercado',
+    'productos de calidad', 'servicio de calidad',
+    'atencion personalizada', 'trato personalizado',
+    'amplio catalogo', 'gran catalogo',
+    'satisfaccion garantizada', 'compromiso con el cliente'
   ];
-
-  for (var i = 0; i < differentialKeywords.length; i++) {
-    if (text.indexOf(differentialKeywords[i]) !== -1) return 'differential';
+  var hasCliche = false;
+  for (var c = 0; c < marketingCliches.length; c++) {
+    if (text.indexOf(marketingCliches[c]) !== -1) { hasCliche = true; break; }
   }
 
-  // Patrones de "descripcion generica" (solo dice que hace, no por que es mejor)
-  // Ejemplo del caso reportado: "consejos y tips para mujeres con cancer de mama"
-  // Detecta arranques tipicamente descriptivos sin diferenciador
+  // DIFFERENTIAL KEYWORDS: marcadores reales de diferenciacion verificable.
+  // Estos son hechos concretos que el cliente puede defender: tiempos, garantias,
+  // certificaciones, exclusividades, comparativos directos, mecanicas especificas.
+  var differentialKeywords = [
+    'sin ', 'solo ', 'unico', 'unica', 'primero', 'primera',
+    'mas rapido', 'mas barato que', 'mas economico que',
+    '48 horas', '24 horas', '12 horas', 'al instante', 'mismo dia',
+    'minutos', 'misma hora',
+    'garantia de', 'gratis', 'sin costo', 'sin cargo',
+    'a diferencia', 'mientras que', 'en lugar de', 'no como',
+    'certificad', 'patentado', 'patente', 'exclusivo',
+    'unica empresa', 'unica marca', 'unico en chile', 'unico en',
+    'en zonas rurales', 'en regiones', 'cobertura nacional',
+    'envio gratis', 'envio en',
+    'devolucion ', 'reembolso',
+    'iso ', 'normas ', 'norma chilena',
+    'fabricacion propia', 'produccion propia', 'taller propio',
+    'importacion directa', 'sin intermediarios',
+    'mayorista', 'al por mayor',
+    '%', 'descuento de', 'cuotas sin interes',
+    'organico', 'libre de', '100% '
+  ];
+
+  var hasDifferential = false;
+  for (var i = 0; i < differentialKeywords.length; i++) {
+    if (text.indexOf(differentialKeywords[i]) !== -1) { hasDifferential = true; break; }
+  }
+
+  // GENERIC STARTERS: frases que solo describen que hace el negocio, no que lo hace diferente.
   var genericStarters = [
     'consejos', 'tips', 'servicios de', 'venta de', 'productos de',
-    'somos una', 'ofrecemos', 'vendemos', 'hacemos', 'brindamos',
-    'una marca de', 'una empresa de'
+    'somos una', 'somos un', 'ofrecemos', 'vendemos', 'hacemos', 'brindamos',
+    'una marca de', 'una empresa de', 'una tienda de',
+    'me dedico a', 'nos dedicamos a',
+    'variedad de', 'variedad en'
   ];
+  var hasGenericStarter = false;
   for (var j = 0; j < genericStarters.length; j++) {
     if (text.indexOf(genericStarters[j]) === 0 || text.indexOf(' ' + genericStarters[j]) !== -1) {
-      // Si ademas no contiene ningun differential keyword (ya verificado arriba), es descriptive
-      return 'descriptive';
+      hasGenericStarter = true; break;
     }
   }
 
-  // Si tiene mas de 40 caracteres y no detectamos nada generico, asumir differential
-  if (text.length >= 40) return 'differential';
+  // DECISION TREE:
+  // 1. Si tiene cliche Y NO tiene diferenciador real -> descriptive
+  // 2. Si tiene diferenciador real (gana sobre el cliche) -> differential
+  // 3. Si tiene generic starter sin diferenciador -> descriptive
+  // 4. Fallback: descriptive (antes era differential, demasiado permisivo)
+  if (hasCliche && !hasDifferential) return 'descriptive';
+  if (hasDifferential) return 'differential';
+  if (hasGenericStarter) return 'descriptive';
+
+  // FALLBACK CONSERVADOR: si no detectamos diferenciador concreto, es descriptive.
+  // Si el usuario realmente tiene un diferencial, deberia poder usar alguna palabra
+  // de la lista (tiempo, garantia, certificacion, etc). Si no la usa, es senal de
+  // que la propuesta es vaga.
   return 'descriptive';
+}
+
+// Funcion auxiliar: genera preguntas guiadas para ayudar al usuario a articular
+// su diferencial real cuando la propuesta es descriptive.
+function preguntasGuiadasDiferencial(categoria) {
+  // Devuelve 3 preguntas concretas segun la categoria del negocio.
+  // El objetivo es forzar al usuario a articular un diferencial verificable.
+  var preguntasGenericas = [
+    'Que problema resuelves que tu competencia no resuelve igual de bien?',
+    'Si un cliente pregunta "por que tu y no Falabella/Ripley/Paris", que respondes?',
+    'Cual es el numero o hecho concreto que te diferencia? (tiempo de entrega, garantia, descuento, certificacion, exclusividad)'
+  ];
+  var preguntasPorCategoria = {
+    'Retail / E-commerce': [
+      'Cual es tu producto estrella y por que la gente lo compra a ti y no en Falabella?',
+      'En que se basa tu precio competitivo: descuento real, importacion directa, mayorista, stock liquidacion?',
+      'Tienes algo unico: marca exclusiva, hecho a mano, envio mas rapido, garantia mas larga?'
+    ],
+    'Salud y Farma': [
+      'Que tratamiento o servicio ofreces que pocas clinicas/farmacias ofrecen?',
+      'Tienes certificaciones, especialistas o tecnologia que otros no tienen?',
+      'Como es tu modelo de atencion distinto al de las grandes cadenas?'
+    ],
+    'Servicios / Utilities': [
+      'En cuanto tiempo resuelves vs los demas? (horas, dias)',
+      'Cubres una zona geografica que otros no cubren?',
+      'Que garantia o post-venta ofreces que tus competidores no ofrecen?'
+    ],
+    'Inmobiliario': [
+      'Que tipo de propiedad es tu nicho (terreno, parcela, depto entrega rapida)?',
+      'Que financiamiento o facilidad ofreces que otros no?',
+      'Que zona dominas mejor que las grandes inmobiliarias?'
+    ],
+    'Educacion': [
+      'Que metodologia o certificacion tienes que otros no?',
+      'Cual es la tasa de empleabilidad o resultado concreto que muestras?',
+      'Que hace que tus alumnos te elijan en vez de las universidades grandes o academias online masivas?'
+    ]
+  };
+  return preguntasPorCategoria[categoria] || preguntasGenericas;
 }
 
 function toggleChip(el, color) {
@@ -2385,6 +2516,60 @@ function dismissScopeBanner() {
   console.log('[KIVO] Scope banner dismissed por el usuario. Procediendo con flujo comercial estandar.');
 }
 
+// FIX (2026-05 v2): Banner que advierte cuando el nivel competitivo del cliente
+// no es coherente con la competencia ingresada. Ej: tienda hiperlocal con Falabella
+// como competencia (juegan en otra liga).
+function renderCompetitionLevelWarning(brief, parsed) {
+  var banner = document.getElementById('competitionLevelBanner');
+  if (!banner) return;
+
+  var pv = (parsed && parsed.propuesta_valor) || '';
+  var ctx = (parsed && parsed.contexto) || '';
+  var presup = (parsed && parsed.presupuesto) || '';
+
+  var nivel = detectarNivelCompetitivo(brief, pv, ctx, presup);
+  // Guardar el nivel detectado para que el prompt del plan lo use
+  window.KIVO_NIVEL_COMPETITIVO = nivel;
+
+  var competenciaTexto = '';
+  var compEl = document.getElementById('competencia');
+  if (compEl) competenciaTexto = compEl.value || '';
+  // Tambien revisar lo que el usuario puso en el brief original como competencia
+  if (parsed && parsed.competencia) competenciaTexto += ' ' + parsed.competencia;
+
+  var mismatch = detectarMismatchCompetencia(nivel, competenciaTexto);
+  if (!mismatch) {
+    banner.className = 'scope-banner';
+    banner.innerHTML = '';
+    return;
+  }
+
+  banner.innerHTML =
+    '<div class="scope-banner-title">' +
+      '<span>\u26A0</span>' +
+      '<span>Revisa tu competencia: parece que no coincide con tu nivel de mercado</span>' +
+    '</div>' +
+    '<div class="scope-banner-body">' + mismatch.mensaje + '</div>' +
+    '<div class="scope-banner-body">' +
+      '<strong>Sugerencia:</strong> identifica 3-5 negocios de tu mismo tamano en tu zona geografica. ' +
+      'Camina o googlea por tu barrio/comuna, mira que hacen los locales similares al tuyo. ' +
+      'Si no conoces a tu competencia real, el plan no podra diferenciarte.' +
+    '</div>' +
+    '<div class="scope-banner-actions">' +
+      '<span class="scope-banner-dismiss" onclick="dismissCompetitionLevelBanner()">Entiendo, sigo de todas formas</span>' +
+    '</div>';
+  banner.className = 'scope-banner visible';
+}
+
+function dismissCompetitionLevelBanner() {
+  var banner = document.getElementById('competitionLevelBanner');
+  if (banner) {
+    banner.className = 'scope-banner';
+    banner.innerHTML = '';
+  }
+  console.log('[KIVO] Competition level warning dismissed por el usuario.');
+}
+
 // --- AUTO-INVESTIGAR COMPETENCIA -------------------------
 // FIX (2026-05): Rediseno del prompt para eliminar few-shot leakage.
 // Antes el prompt incluia el ejemplo de "dispensadores de agua" + instruccion
@@ -2396,6 +2581,105 @@ function dismissScopeBanner() {
 //  3) Recibe propuesta de valor + brief como contexto principal
 //  4) Detecta caso no-comercial (creator/divulgacion) y pide cuentas referentes
 //  5) Valida output: si parece basura categorica, descarta
+
+// FIX (2026-05 v2): Detectar nivel competitivo (hiperlocal / local / regional / nacional / online).
+// Un negocio hiperlocal (zapateria de strip center) NO compite con Falabella/Paris/Ripley.
+// El nivel competitivo determina contra QUIENES compite, no la categoria sola.
+function detectarNivelCompetitivo(brief, propuestaValor, contexto, presupuesto) {
+  var t = ((brief || '') + ' ' + (propuestaValor || '') + ' ' + (contexto || '')).toLowerCase();
+  var presup = parseFloat(presupuesto) || 0;
+
+  // Senales de ONLINE-FIRST (evaluar PRIMERO, gana sobre todo lo demas si esta presente)
+  var senalesOnline = [
+    'e-commerce', 'ecommerce', 'tienda online', 'tienda virtual',
+    'solo online', 'unicamente online', '100% online',
+    'sin tienda fisica', 'no tenemos local',
+    'marketplace', 'shopify', 'woocommerce'
+  ];
+  for (var o = 0; o < senalesOnline.length; o++) {
+    if (t.indexOf(senalesOnline[o]) !== -1) return 'online';
+  }
+
+  // Senales de NACIONAL (evaluar antes que hiperlocal, gana sobre local)
+  var senalesNacional = [
+    'todo chile', 'a todo chile', 'todo el pais',
+    'despacho nacional', 'envio a todo chile', 'cobertura nacional',
+    'cadena nacional', 'todas las regiones'
+  ];
+  for (var n = 0; n < senalesNacional.length; n++) {
+    if (t.indexOf(senalesNacional[n]) !== -1) return 'nacional';
+  }
+
+  // Senales de HIPERLOCAL (barrio, strip center, comuna especifica, single location)
+  var senalesHiperlocal = [
+    'strip center', 'stripcenter', 'mi local', 'mi tienda',
+    'una sola tienda', 'unica tienda',
+    'mi barrio', 'en el barrio',
+    'galeria', 'plaza ', 'pasaje ',
+    'a la vuelta', 'cerca de mi casa',
+    'pequeno negocio', 'negocio familiar', 'emprendimiento familiar',
+    'recien abrimos', 'recien abierto', 'nuevo local'
+  ];
+  for (var h = 0; h < senalesHiperlocal.length; h++) {
+    if (t.indexOf(senalesHiperlocal[h]) !== -1) return 'hiperlocal';
+  }
+
+  // Senales de REGIONAL (varias regiones / zona del pais)
+  var senalesRegional = [
+    'zona sur', 'zona norte', 'zona centro',
+    'varias regiones', 'tres regiones', 'cuatro regiones',
+    'norte de chile', 'sur de chile'
+  ];
+  for (var r = 0; r < senalesRegional.length; r++) {
+    if (t.indexOf(senalesRegional[r]) !== -1) return 'regional';
+  }
+
+  // Senales de LOCAL (una ciudad o comuna, multiples puntos pero geografia acotada)
+  var senalesLocal = [
+    'en santiago', 'en valparaiso', 'en concepcion', 'en temuco', 'en antofagasta',
+    'en la serena', 'en iquique', 'en puerto montt', 'en chillan', 'en rancagua',
+    'comuna de', 'en la comuna', 'sucursales en',
+    'cobertura en santiago', 'solo santiago',
+    'region metropolitana'
+  ];
+  for (var l = 0; l < senalesLocal.length; l++) {
+    if (t.indexOf(senalesLocal[l]) !== -1) return 'local';
+  }
+
+  // Fallback por presupuesto: presupuesto bajo => probablemente local
+  if (presup > 0 && presup < 500) return 'hiperlocal';
+  if (presup > 0 && presup < 2000) return 'local';
+  return 'desconocido';
+}
+
+// FIX (2026-05 v2): Detectar si la competencia ingresada por el usuario es coherente
+// con el nivel competitivo. Devuelve un warning si hay mismatch grave.
+// Ej: cliente hiperlocal + competencia "Falabella, Paris, Ripley" => warning.
+function detectarMismatchCompetencia(nivelCompetitivo, competenciaTexto) {
+  if (!competenciaTexto || !nivelCompetitivo) return null;
+  var grandesRetailersChile = [
+    'falabella', 'paris', 'ripley', 'la polar',
+    'lider', 'jumbo', 'unimarc', 'tottus', 'santa isabel',
+    'sodimac', 'easy', 'homecenter',
+    'mercadolibre', 'mercado libre', 'linio',
+    'corona', 'casaideas', 'paris.cl', 'falabella.com'
+  ];
+  var t = competenciaTexto.toLowerCase();
+  var hasGrandRetailer = false;
+  var grandesEncontrados = [];
+  grandesRetailersChile.forEach(function(g) {
+    if (t.indexOf(g) !== -1) { hasGrandRetailer = true; grandesEncontrados.push(g); }
+  });
+
+  if (hasGrandRetailer && (nivelCompetitivo === 'hiperlocal' || nivelCompetitivo === 'local')) {
+    return {
+      tipo: 'mismatch-grandes-retailers',
+      mensaje: 'Detectamos que tu negocio parece ser ' + nivelCompetitivo + ', pero ingresaste a grandes retailers (' + grandesEncontrados.join(', ') + ') como competencia. Un negocio ' + nivelCompetitivo + ' no compite realmente con esas marcas (juegan en otra liga: marca nacional, credito, despacho a todo el pais). Te conviene identificar competidores de tu mismo tamano y zona geografica para que el analisis sea util.'
+    };
+  }
+  return null;
+}
+
 function detectIsNonCommercial(propuestaValor, brief) {
   var t = ((propuestaValor || '') + ' ' + (brief || '')).toLowerCase();
   // Senales fuertes de cuenta personal / creator / divulgacion
@@ -2727,6 +3011,10 @@ INTERESES: Compras, Finanzas, Tecnolog\u00eda, Deporte, Familia, Viajes, Gaming,
     // Si el brief parece ser cuenta personal/creator, mostramos un banner que
     // explica esto y bloquea (suavemente) la generacion del plan.
     renderScopeBanner(brief, parsed);
+    // FIX (2026-05 v2): Detectar nivel competitivo y mostrar warning si la
+    // competencia ingresada no es coherente con ese nivel (ej: tienda hiperlocal
+    // que pone Falabella/Paris/Ripley como competencia).
+    renderCompetitionLevelWarning(brief, parsed);
     status.className = 'brief-status';
 
     // Mark missing fields immediately after autofill animations
@@ -2875,6 +3163,15 @@ async function generarPlan() {
   const fecha = gv('fechaInicio', '');
   const propuestaValor = document.getElementById('propuestaValor') ? document.getElementById('propuestaValor').value.trim() : '';
 
+  // FIX (2026-05 v2): Capturar capas extra de targeting fino
+  // - Comportamientos de compra (chips): comprador frecuente, busqueda activa, etc.
+  // - Intereses especificos (input texto libre): palabras clave del rubro/nicho
+  // Estos campos son opcionales pero mejoran enormemente la precision del targeting.
+  var comportamientosChips = Array.from(document.querySelectorAll('#comportamientosChips .chip.active')).map(function(c) { return c.textContent.trim(); });
+  var comportamientos = comportamientosChips.join(', ');
+  var interesesEspecificosEl = document.getElementById('interesesEspecificos');
+  var interesesEspecificos = interesesEspecificosEl ? interesesEspecificosEl.value.trim() : '';
+
   // NSE tactical translation for prompt
   var nseSelected = 'Masivo';
   var nseActiveChip = document.querySelector('#nseChips .chip.active');
@@ -2930,17 +3227,50 @@ COMO PIENSAS:
 
 REGLAS CRITICAS:
 1. Cada plataforma recomendada DEBE tener justificacion especifica en "por_que", razon concreta basada en objetivo, audiencia, CPM y material disponible. No generalidades.
-2. NUMERO DE PLATAFORMAS, decision inteligente, no formula:
-   - Presupuesto total menor a $500 USD: 1 plataforma maxima (fragmentar reduce impacto)
-   - Presupuesto $500-$1,000 USD: 1-2 plataformas segun objetivo
-   - Presupuesto mayor a $1,000 USD: 2-3 plataformas SIEMPRE para diversificar riesgo y capturar audiencia en distintos momentos
-   - Si recomiendas solo 1 plataforma con presupuesto mayor a $1,000 USD, DEBES justificar explicitamente por que una sola es optima
+2. NUMERO DE PLATAFORMAS - decision basada en PRESUPUESTO MINIMO VIABLE POR PLATAFORMA, no en suma total:
+   - Cada plataforma necesita un piso para salir de fase de aprendizaje:
+     * Meta Ads: minimo $400 USD por mes para que el algoritmo aprenda (50 conversiones)
+     * Google Performance Max: minimo $750 USD por mes (necesita volumen para optimizar)
+     * Google Search: minimo $300 USD por mes
+     * TikTok Ads: minimo $500 USD por mes
+     * YouTube: minimo $600 USD por mes
+     * LinkedIn: minimo $800 USD por mes (CPM altisimo)
+     * Spotify: minimo $400 USD por mes
+   - Regla de decision REAL:
+     * Calcula presupuesto mensualizado (presupuesto / (duracion_semanas/4))
+     * Solo recomienda plataformas donde el presupuesto asignado supere su piso minimo
+     * Si despues de aplicar el piso solo queda 1 plataforma viable, recomienda 1 sola (NO fragmentes para parecer profesional)
+     * Ejemplo: $1,053 USD por 4 semanas (mensualizado $1,053). Si lo divides 60/40 entre Meta y Google PMax, Google solo recibe $421 (debajo del piso $750). En ese caso recomienda SOLO Meta con todo el presupuesto
+   - REGLA DE ORO: es mejor 1 plataforma con presupuesto que aprenda, que 2 plataformas en eterna fase exploratoria sin convertir
+   - Si recomiendas 1 sola plataforma con presupuesto total mayor a $1,500 USD, justifica por que (audiencia muy especifica, material limitado, etc.)
+   - NUNCA recomiendes 3 plataformas si el presupuesto total mensualizado es menor a $3,000 USD
 3. La frecuencia ideal para leads es 2-3x. Si proyectas mas de 3.5x, es obligatorio agregar una segunda plataforma para distribuir impresiones.
 4. Para servicios locales en LATAM con objetivo leads: Meta con CTA WhatsApp convierte 3-5x mejor que formulario web (fuente: Meta Business 2024). Priorizar siempre.
 5. Google Performance Max es preferible a Search + Display separados cuando presupuesto Google es menor a $1,500 USD. La IA de Google optimiza mejor con presupuesto consolidado.
 6. Si frecuencia proyectada supera 4x: ADVERTIR y recomendar ampliar audiencia o agregar segunda plataforma.
-7. Cada copy DEBE mencionar el diferencial especifico del cliente, no el nombre del producto ni la categoria generica.
+7. COPIES DE PERFORMANCE (NO copies "bonitos") - cada copy debe seguir estructura comprobada:
+   - HOOK + DIFERENCIAL ESPECIFICO + PRUEBA O URGENCIA + CTA claro
+   - NUNCA uses formulaciones genericas como "Descubre nuestra variedad", "La mejor calidad al mejor precio", "Encuentra lo que buscas". Estos son sintomas de copy mediocre.
+   - Cada plataforma debe tener 3 VARIANTES con hook distinto para A/B test:
+     * Variante A - HOOK DE PRECIO/OFERTA: empieza con el numero o descuento concreto. Ej: "30% off hoy en X", "$9.990 envio incluido"
+     * Variante B - HOOK EMOCIONAL/IDENTIDAD: empieza con un problema, deseo o identidad del cliente. Ej: "Si te cuesta encontrar zapatillas que duren mas de 6 meses..."
+     * Variante C - HOOK SOCIAL PROOF: empieza con un numero de clientes, anos en el mercado, o testimonio. Ej: "+ de 5.000 clientes confian en X desde 2018"
+   - Cada copy debe ser ESPECIFICO al cliente: usar su nombre, su zona, su diferencial verificable
+   - Para negocios HIPERLOCALES o LOCALES: el copy DEBE mencionar la zona geografica (ej: "en Maipu", "a 5 minutos de Plaza Las Lilas")
+   - El CTA debe ser una accion concreta, no "Mas info". Usar "Llama ya", "Reserva hoy", "Conoce el modelo X", "Ven a probar"
+   - Longitud: titular max 40 caracteres (Meta), descripcion max 90 caracteres. Esto es regla dura para que se vea bien en mobile.
 8. La estrategia debe ser la MEJOR decision posible, no la mas segura ni la mas generica. Un experto brillante toma decisiones valientes basadas en datos.
+
+9. CRITERIOS DE EXITO FALSABLES - todo plan DEBE terminar con una hipotesis testeable a 14 dias:
+   - hipotesis: una afirmacion numerica concreta que se puede confirmar o refutar. NO uses "la campana sera exitosa". USA "lograremos CPL menor a $X, o CTR mayor a Y%, o ROAS mayor a Z" segun el objetivo del cliente
+   - metrica_principal: UNA sola metrica que determina si funciono. Para leads: CPL. Para ventas: ROAS. Para awareness: alcance unico + CPM. Para visitas: CPC + tasa de rebote. Elige la mas relevante al objetivo
+   - umbral_exito: numero concreto, no rango vago. Calcula segun benchmarks de la categoria/pais. Ej: "CPL menor a $3 USD", "ROAS mayor a 1.5x", "CPM menor a $4 USD con frecuencia entre 2-3"
+   - punto_decision: siempre "Dia 14" (mitad de campana de 4 semanas, suficiente data para decidir, queda tiempo para corregir)
+   - reglas_reasignacion: 2-4 reglas IF-THEN concretas que el freelancer ejecuta automaticamente el dia 14. Cada regla tiene formato "si: [condicion observable]" + "entonces: [accion concreta]". Ejemplos:
+     * "si CPL en Meta supera $5 USD -> entonces pausar set de anuncios A y B, dejar solo C que mejor performa"
+     * "si CTR menor a 1% en todas las creatividades -> entonces cambiar las 3 creatividades por nuevas con hook distinto"
+     * "si frecuencia supera 4x antes del dia 14 -> entonces ampliar audiencia o agregar 2da plataforma"
+   - Las reglas deben ser ESPECIFICAS al plan que estas armando, no copy-paste generico. Si el plan recomienda Meta + Google PMax, las reglas deben referirse a Meta y Google PMax por nombre.
 
 BRIEF:
 - Cliente: ${cliente} | Categoria: ${categoria} | Pais: ${pais}
@@ -2948,6 +3278,11 @@ BRIEF:
 - Presupuesto: USD ${Number(presupuesto).toLocaleString()} | Duracion: ${duracion} sem | Audiencia: ${edad}
 ${competencia?`- Competencia: ${competencia}`:''}${propuestaValor?`\n- Propuesta de valor / Diferencial: ${propuestaValor}`:''}${fecha?`\n- Inicio: ${fecha}`:''}${contexto?`\n- Contexto: ${contexto}`:''}
 - ${nseContexto}
+- Nivel competitivo detectado: ${window.KIVO_NIVEL_COMPETITIVO || 'desconocido'} (hiperlocal=barrio/strip-center, local=una ciudad, regional=zona, nacional=todo el pais, online=ecommerce puro)
+${comportamientos?`- Comportamientos de compra: ${comportamientos}`:''}
+${interesesEspecificos?`- Intereses especificos del nicho: ${interesesEspecificos}`:''}
+IMPORTANTE SOBRE AUDIENCIA: la audiencia macro (edad + NSE) es solo un baseline. Si hay comportamientos de compra o intereses especificos del nicho, USALOS en tu recomendacion de targeting. Un targeting de "18-34 NSE masivo" es vago y obsoleto. Un targeting de "18-34 + comprador frecuente online + intereses: running, marathon" es accionable y baja el CPM significativamente. En la seccion "estrategia" y "por_que" de cada plataforma, MENCIONA EXPLICITAMENTE como vas a usar estos comportamientos e intereses en el targeting real.
+IMPORTANTE SOBRE NIVEL COMPETITIVO: Si es hiperlocal o local, NO compares con grandes retailers nacionales (Falabella, Paris, Ripley en Chile - o equivalentes en otros paises) como competencia real. Estos juegan en otra liga. Los competidores reales de un negocio hiperlocal son OTROS NEGOCIOS DE SU MISMO TAMANO Y ZONA. La estrategia debe enfocarse en geo-targeting estrecho, mensajes locales, y ventajas que solo un local puede ofrecer (atencion personal, conocimiento del barrio, rapidez de entrega local).
 MATERIAL: ${matDesc}
 
 CPMs REALES DE MERCADO PARA ${pais.toUpperCase()} - CATEGORIA: ${categoria} (fuentes: Lebesgue, AdAmigo, WordStream - ajustados por categoria 2025/2026):
@@ -2975,7 +3310,11 @@ COPIES DE ANUNCIO: Genera copies REALES y especificos, no descripciones generica
 REGLAS: 2-4 plataformas. Sin video&rarr;no YouTube/TikTok. Sin audio&rarr;no Spotify. Sin material&rarr;Search+Meta. Porcentajes suman 100. Presupuestos suman ${presupuesto}. Impresiones=(presupuesto_plataforma/cpm_real)*1000. Alcance=impresiones/frecuencia.
 
 Responde SOLO JSON v\u00e1lido sin markdown:
-{"razon_seleccion":"2-3 oraciones","advertencia_material":null,"plataformas":[{"nombre":"","porcentaje":0,"presupuesto":0,"impresiones":0,"alcance":0,"frecuencia":0,"cpm_estimado":0,"formato_recomendado":"","por_que":""}],"totales":{"impresiones_totales":0,"alcance_total":0,"frecuencia_promedio":0,"cpm_promedio":0},"kpi_proyecciones":[{"kpi":"","proyeccion":""}],"copies":[{"plataforma":"","formato":"","titular":"","descripcion":"","cta":"","nota":""}],"estrategia":"","timing":[{"semana":"Semana 1","foco":"","plataformas":[]},{"semana":"Semana 2","foco":"","plataformas":[]},{"semana":"Semana 3","foco":"","plataformas":[]},{"semana":"Semana 4","foco":"","plataformas":[]}],"advertencias":[]}`;
+{"razon_seleccion":"2-3 oraciones","advertencia_material":null,"plataformas":[{"nombre":"","porcentaje":0,"presupuesto":0,"impresiones":0,"alcance":0,"frecuencia":0,"cpm_estimado":0,"formato_recomendado":"","por_que":""}],"totales":{"impresiones_totales":0,"alcance_total":0,"frecuencia_promedio":0,"cpm_promedio":0},"kpi_proyecciones":[{"kpi":"","proyeccion":""}],"copies":[{"plataforma":"","formato":"","hook_type":"precio|emocional|social_proof","titular":"","descripcion":"","cta":"","nota":""}],"estrategia":"","timing":[{"semana":"Semana 1","foco":"","plataformas":[]},{"semana":"Semana 2","foco":"","plataformas":[]},{"semana":"Semana 3","foco":"","plataformas":[]},{"semana":"Semana 4","foco":"","plataformas":[]}],"criterios_exito":{"hipotesis":"","metrica_principal":"","umbral_exito":"","punto_decision":"Dia 14","reglas_reasignacion":[{"si":"","entonces":""}]},"advertencias":[]}
+
+NOTA SOBRE CRITERIOS_EXITO: define una hipotesis falsable (no "la campana funcionara", sino "lograremos X CPL menor a $Y en 14 dias"). La metrica_principal es UNA sola (no varias). El umbral_exito es un numero concreto, no un rango vago. Las reglas_reasignacion son condiciones IF-THEN concretas que el freelancer puede ejecutar el dia 14 sin pensar.
+
+NOTA SOBRE COPIES: el array "copies" debe tener 3 entradas por cada plataforma activa (una por hook_type). Si hay 2 plataformas, el array tiene 6 copies en total.`;
 
   try {
     var raw = await safeGroqCall(prompt, 4000, 2);
@@ -3030,6 +3369,54 @@ const AD_SPECS = {
     'Google Search':        { resolucion: 'Sin imagen - solo texto', formato: 'Texto plano', peso: '15 titulares (30 car. c/u) &middot; 4 descripciones (90 car. c/u) &middot; URL visible 15 car.', texto: 'Extensiones de llamada, ubicaci\u00f3n, sitelinks recomendadas', nota: 'Aparece cuando el usuario busca activamente. Mayor intenci\u00f3n de compra. CPC variable seg\u00fan competencia de categor\u00eda' },
   },
 };
+
+// FIX (2026-05 v2): Render de criterios de exito a 14 dias.
+// Esta seccion materializa la "hipotesis falsable" que un experto exigiria.
+// Si el modelo no devolvio criterios_exito, no renderizamos nada (compatibilidad
+// hacia atras con planes generados antes del schema nuevo).
+function buildCriteriosExitoHTML(plan) {
+  var c = plan.criterios_exito;
+  if (!c || (!c.hipotesis && !c.metrica_principal)) return '';
+  var hipotesis = c.hipotesis || '';
+  var metrica = c.metrica_principal || '';
+  var umbral = c.umbral_exito || '';
+  var punto = c.punto_decision || 'Dia 14';
+  var reglas = c.reglas_reasignacion || [];
+
+  var reglasHTML = '';
+  if (reglas.length > 0) {
+    reglasHTML = '<div class="exito-reglas-label">Reglas de reasignacion en el ' + punto + '</div>';
+    reglas.forEach(function(r, i) {
+      var si = (r && r.si) ? r.si : '';
+      var entonces = (r && r.entonces) ? r.entonces : '';
+      if (!si && !entonces) return;
+      reglasHTML += '<div class="exito-regla">' +
+        '<div class="exito-regla-num">#' + (i+1) + '</div>' +
+        '<div class="exito-regla-texto"><strong>Si</strong> ' + si + ' <strong>entonces</strong> ' + entonces + '</div>' +
+      '</div>';
+    });
+  }
+
+  return '<div class="exito-card">' +
+    '<div class="exito-label">Como sabremos si funciono</div>' +
+    (hipotesis ? '<div class="exito-hipotesis">' + hipotesis + '</div>' : '') +
+    '<div class="exito-metricas">' +
+      '<div>' +
+        '<div class="exito-metrica-label">Metrica principal</div>' +
+        '<div class="exito-metrica-valor">' + (metrica || '-') + '</div>' +
+      '</div>' +
+      '<div>' +
+        '<div class="exito-metrica-label">Umbral de exito</div>' +
+        '<div class="exito-metrica-valor">' + (umbral || '-') + '</div>' +
+      '</div>' +
+      '<div>' +
+        '<div class="exito-metrica-label">Punto de decision</div>' +
+        '<div class="exito-metrica-valor">' + punto + '</div>' +
+      '</div>' +
+    '</div>' +
+    reglasHTML +
+  '</div>';
+}
 
 function buildLaunchButtons(plan, b) {
   const platforms = plan.plataformas || [];
@@ -3945,11 +4332,23 @@ function buildPlanScore(plan, b) {
   var reasons = [];
 
   // Criterio 1: Mix plataformas (2 pts) - usa las plataformas ACTIVAS
+  // FIX (2026-05 v2): No penalizar 1 sola plataforma si el presupuesto lo justifica.
+  // Antes: 1 plataforma con >$1k => penalizacion automatica. Eso forzaba a fragmentar.
+  // Ahora: 1 plataforma es valido si el presupuesto mensualizado es < $1500 USD,
+  // porque es preferible concentrar para que el algoritmo aprenda.
   var activePlats = activePlatforms.length > 0 ? activePlatforms.length : plan.plataformas.length;
+  var presupTotal = parseFloat(gv('presupuesto', '0')) || 0;
+  var dur = parseFloat(gv('duracion', '4')) || 4;
+  var presupMensualizado = (presupTotal / dur) * 4;
   if (activePlats >= 2 && activePlats <= 4) {
     score += 2; reasons.push('Mix de ' + activePlats + ' plataformas balanceado para el objetivo');
   } else if (activePlats === 1) {
-    score += 1; issues.push('Una sola plataforma activa. Con presupuesto mayor a $1,000 USD se recomienda minimo 2 para diversificar riesgo.');
+    if (presupMensualizado < 1500) {
+      // Una sola plataforma es la decision correcta para este presupuesto
+      score += 2; reasons.push('Concentracion en 1 plataforma - correcto para este presupuesto, permite que el algoritmo aprenda');
+    } else {
+      score += 1; issues.push('Una sola plataforma con presupuesto mensualizado superior a $1,500 USD. Considera diversificar.');
+    }
   } else {
     issues.push('Mas de 4 plataformas fragmenta el presupuesto. Concentra en 2-3.');
   }
@@ -4221,9 +4620,20 @@ function renderResult(plan, b) {
 
   const copiesHTML = (plan.copies||[]).map(function(c) {
     const cl = getPClass(c.plataforma);
+    // FIX (2026-05 v2): Mostrar hook_type como badge para que el usuario entienda
+    // que cada variante esta optimizada para un tipo de gancho distinto y puede A/B test.
+    var hookLabel = '';
+    var hookColor = '';
+    if (c.hook_type === 'precio') { hookLabel = 'Hook: Precio/Oferta'; hookColor = '#30d158'; }
+    else if (c.hook_type === 'emocional') { hookLabel = 'Hook: Emocional'; hookColor = '#bf5af2'; }
+    else if (c.hook_type === 'social_proof') { hookLabel = 'Hook: Social Proof'; hookColor = '#5b7fff'; }
+    var hookBadge = hookLabel
+      ? '<div style="display:inline-block;padding:2px 8px;border-radius:6px;background:rgba(255,255,255,0.06);border:1px solid ' + hookColor + ';color:' + hookColor + ';font-size:10px;font-weight:600;margin-bottom:8px;letter-spacing:0.02em;">' + hookLabel + '</div>'
+      : '';
     return `<div class="copy-card">
       <div class="copy-platform">${c.plataforma}</div>
       <div class="copy-format">${c.formato}</div>
+      ${hookBadge}
       <div class="copy-titular">${c.titular}</div>
       <div class="copy-desc">${c.descripcion}</div>
       <span class="copy-cta">${c.cta}</span>
@@ -4421,6 +4831,8 @@ function renderResult(plan, b) {
       <div class="section-label">Timing de activaci\u00f3n</div>
       <div class="timing-grid">${timing}</div>
     </div>
+
+    ${buildCriteriosExitoHTML(plan)}
 
     ${advertencias ? `<div class="note-card">${advertencias}</div>` : ''}
     ${b.competencia ? buildCompIntelHTML(b.competencia, b.pais, b.categoria) : ''}
