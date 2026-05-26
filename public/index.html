@@ -1607,39 +1607,165 @@ function sanitizePlanOutput(plan, brief) {
     plan.criterios_exito.reglas_reasignacion = existing;
   }
 
-  // ---- 3) Calibrar umbral_exito CPL para realidad de pixel frio Chile ----
-  // Si el modelo prometio CPL menor a $5 USD para Chile/LATAM con plataforma de
-  // Meta nueva, eso es irreal en pixel frio primer mes. Lo escalamos a $10-12.
-  // FIX RUNTIME BUG (2026-05 v3.1): el modelo a veces devuelve umbral_exito o
-  // metrica_principal como numero en lugar de string. Convertir a String() antes
-  // de operar para evitar "toLowerCase is not a function".
-  if (plan.criterios_exito.umbral_exito && plan.criterios_exito.metrica_principal) {
-    var umbral = String(plan.criterios_exito.umbral_exito).toLowerCase();
+  // ---- 3) Calibrar y formatear umbral_exito ----
+  // FIX v3.3 - Acción 2: ANTES solo recalibraba si era CPL bajo. AHORA siempre
+  // formatea con unidad clara aunque el LLM devuelva solo "10" sin contexto.
+  // El usuario no debe leer "UMBRAL: 10" y preguntarse 10 qué.
+  if (plan.criterios_exito.umbral_exito !== undefined && plan.criterios_exito.umbral_exito !== null && plan.criterios_exito.metrica_principal) {
+    var umbralOrig = plan.criterios_exito.umbral_exito;
+    var umbral = String(umbralOrig).toLowerCase();
     var metrica = String(plan.criterios_exito.metrica_principal).toLowerCase();
     var pais2 = (brief && brief.pais) || 'Chile';
     var esLatam = ['chile','peru','colombia','argentina','mexico','ecuador','bolivia','paraguay','uruguay'].indexOf(pais2.toLowerCase()) !== -1;
 
-    // Match CPL muy bajo: "menor a $3", "menor a $4", "$5 USD", "5 USD", "<3", o number plano "5"
-    // FIX v3.2: detector mas robusto. El LLM devuelve umbral en formatos variados:
-    //   string: "Menor a $5 USD" -> matchea $5
-    //   string: "menos de 5 usd" -> matchea 5
-    //   number: 5 -> stringified "5" -> matchea 5
-    // El extractor encuentra el primer numero <=10 en el texto (es ms confiable).
+    // Extraer todos los numeros del texto
     var numbersInUmbral = umbral.match(/\d+(?:\.\d+)?/g) || [];
     var minValor = null;
     for (var nu = 0; nu < numbersInUmbral.length; nu++) {
       var v = parseFloat(numbersInUmbral[nu]);
-      if (v > 0 && v <= 10 && (minValor === null || v < minValor)) minValor = v;
+      if (v > 0 && v <= 100 && (minValor === null || v < minValor)) minValor = v;
     }
-    if (esLatam && metrica.indexOf('cpl') !== -1 && minValor !== null && minValor <= 5) {
-      plan.criterios_exito.umbral_exito = 'Menor a $12 USD primer mes (pixel frio), bajando a $8 USD al mes 3 cuando el algoritmo aprenda';
-      // Agregar a advertencias
+
+    // CASO A: CPL/CPA con valor irreal para LATAM pixel frio -> recalibrar a $12
+    if (esLatam && (metrica.indexOf('cpl') !== -1 || metrica.indexOf('cpa') !== -1) && minValor !== null && minValor <= 5) {
+      plan.criterios_exito.umbral_exito = 'Menor a $12 USD por lead primer mes (pixel frio), bajando a $8 USD al mes 3 cuando el algoritmo aprenda';
       if (!plan.advertencias) plan.advertencias = [];
       plan.advertencias.push('Umbral CPL ajustado: KIVO calibro el objetivo a $12 USD primer mes en lugar de un valor menor, porque un pixel nuevo en Meta necesita 50+ conversiones para aprender. Prometer CPL <$5 USD desde dia 1 es irreal y quema la relacion con el cliente cuando no se cumple.');
+    }
+    // CASO B: umbral es solo un numero sin formato (ej "10" o number 10) -> agregar unidad
+    else if (minValor !== null) {
+      var umbralFormat = String(umbralOrig).trim();
+      var hasDollar = umbralFormat.indexOf('$') !== -1;
+      var hasUSD = umbralFormat.toLowerCase().indexOf('usd') !== -1;
+      var hasPercent = umbralFormat.indexOf('%') !== -1;
+      var hasX = /\d+x/i.test(umbralFormat);
+      var isJustNumber = /^[<>=]?\s*\$?\s*\d+(?:\.\d+)?(?:\s*usd)?$/i.test(umbralFormat);
+
+      // Si es CPL/CPA y solo numero, agregar "$ USD por lead"
+      if ((metrica.indexOf('cpl') !== -1 || metrica.indexOf('cpa') !== -1) && isJustNumber && !hasDollar) {
+        plan.criterios_exito.umbral_exito = 'Menor a $' + minValor + ' USD por lead';
+      }
+      // Si es CPM y solo numero, agregar "$ USD CPM"
+      else if (metrica.indexOf('cpm') !== -1 && isJustNumber && !hasDollar) {
+        plan.criterios_exito.umbral_exito = 'Menor a $' + minValor + ' USD CPM';
+      }
+      // Si es CTR y solo numero, agregar "%"
+      else if (metrica.indexOf('ctr') !== -1 && !hasPercent) {
+        plan.criterios_exito.umbral_exito = 'Mayor a ' + minValor + '%';
+      }
+      // Si es ROAS y solo numero, agregar "x"
+      else if (metrica.indexOf('roas') !== -1 && !hasX) {
+        plan.criterios_exito.umbral_exito = 'Mayor a ' + minValor + 'x';
+      }
+      // Si es CPC y solo numero, agregar "$ USD"
+      else if (metrica.indexOf('cpc') !== -1 && isJustNumber && !hasDollar) {
+        plan.criterios_exito.umbral_exito = 'Menor a $' + minValor + ' USD por click';
+      }
+      // Si el umbral ya tiene formato (string descriptivo con $/USD/%/etc), dejarlo
+      else if (hasDollar || hasUSD || hasPercent || hasX) {
+        plan.criterios_exito.umbral_exito = String(umbralOrig);
+      }
+      // Fallback final: si es solo numero y no detectamos metrica conocida, usar "$ USD"
+      else if (isJustNumber) {
+        plan.criterios_exito.umbral_exito = '$' + minValor + ' USD';
+      }
+    }
+  }
+
+  // ---- 4) Defensa: proyecciones que confunden leads con ventas ----
+  // FIX v3.3 - Acción 4: si la metrica es CPL/leads pero la proyeccion habla de
+  // "ventas", KIVO debe aclarar que son leads/conversaciones, no ventas cerradas.
+  if (plan.kpi_proyecciones && plan.kpi_proyecciones.length > 0) {
+    plan.kpi_proyecciones = plan.kpi_proyecciones.map(function(kp) {
+      if (!kp) return kp;
+      var kpiName = String(kp.kpi || '').toLowerCase();
+      var proyText = String(kp.proyeccion || '');
+      // Si dice "ventas" pero la metrica es CPL/leads/conversaciones, aclarar
+      if ((kpiName.indexOf('venta') !== -1 || proyText.toLowerCase().indexOf('venta') !== -1) &&
+          plan.criterios_exito && plan.criterios_exito.metrica_principal) {
+        var metricaLower = String(plan.criterios_exito.metrica_principal).toLowerCase();
+        if (metricaLower.indexOf('cpl') !== -1 || metricaLower.indexOf('lead') !== -1) {
+          // Reemplazar "ventas" por "leads/conversaciones" y agregar nota
+          var corrected = proyText.replace(/\bventas\b/gi, 'leads/conversaciones WhatsApp');
+          kp.proyeccion = corrected + ' (estimado de leads, no ventas cerradas - tasa de cierre depende del cliente)';
+        }
+      }
+      return kp;
+    });
+  }
+
+  // ---- 5) Inserción geográfica en copies ----
+  // FIX v3.3 - Acción 3: si el brief tiene una zona geográfica clara y el copy
+  // no la menciona, agregar nota recomendando incluirla. NO modificamos el copy
+  // automáticamente (sería riesgoso reescribir), pero alertamos al freelancer.
+  if (plan.copies && plan.copies.length && brief) {
+    var zonaGeo = extraerZonaGeografica((brief.brief || '') + ' ' + (window.KIVO_LAST_BRIEF || ''));
+    if (zonaGeo) {
+      plan.copies = plan.copies.map(function(c) {
+        if (!c) return c;
+        var copyTxtOrig = String(c.titular || '') + ' ' + String(c.descripcion || '');
+        // Normalizar para comparar (la zona ya viene normalizada)
+        var copyTxtNorm = copyTxtOrig.toLowerCase()
+          .replace(/[\u00e1\u00e0\u00e4\u00e2]/g, 'a')
+          .replace(/[\u00e9\u00e8\u00eb\u00ea]/g, 'e')
+          .replace(/[\u00ed\u00ec\u00ef\u00ee]/g, 'i')
+          .replace(/[\u00f3\u00f2\u00f6\u00f4]/g, 'o')
+          .replace(/[\u00fa\u00f9\u00fc\u00fb]/g, 'u')
+          .replace(/[\u00f1]/g, 'n');
+        if (copyTxtNorm.indexOf(zonaGeo.toLowerCase()) === -1) {
+          var prevNota = c.nota || '';
+          var aviso = '[AVISO KIVO] Recomendamos mencionar "' + zonaGeo + '" en el copy para mejorar relevancia local';
+          c.nota = (prevNota.indexOf('[AVISO KIVO]') !== -1) ? prevNota + ' / ' + aviso.replace('[AVISO KIVO] ', '') : aviso + (prevNota ? ' / ' + prevNota : '');
+        }
+        return c;
+      });
     }
   }
 
   return plan;
+}
+
+// FIX v3.3 - Acción 3: extractor de zona geográfica del brief.
+// Detecta comunas chilenas y otras zonas comunes para defensa profunda.
+// Normaliza acentos para que "Maipú" coincida con "maipu" en la lista.
+function extraerZonaGeografica(text) {
+  if (!text) return null;
+  // Normalizar: lowercase + remover acentos (NFD -> filtrar combining marks)
+  var t = String(text).toLowerCase();
+  // ES5-compatible: reemplazar acentos manualmente para no depender de normalize() inconsistente
+  t = t.replace(/[\u00e1\u00e0\u00e4\u00e2]/g, 'a')
+       .replace(/[\u00e9\u00e8\u00eb\u00ea]/g, 'e')
+       .replace(/[\u00ed\u00ec\u00ef\u00ee]/g, 'i')
+       .replace(/[\u00f3\u00f2\u00f6\u00f4]/g, 'o')
+       .replace(/[\u00fa\u00f9\u00fc\u00fb]/g, 'u')
+       .replace(/[\u00f1]/g, 'n');
+  // Lista de comunas y zonas chilenas comunes + algunas latam
+  var zonas = [
+    'maipu', 'providencia', 'las condes', 'la florida', 'puente alto',
+    'nunoa', 'vitacura', 'lo barnechea', 'la reina', 'macul',
+    'penalolen', 'la cisterna', 'san miguel', 'estacion central',
+    'quilicura', 'pudahuel', 'cerrillos', 'el bosque',
+    'recoleta', 'independencia', 'huechuraba', 'conchali',
+    'santiago centro', 'santiago', 'valparaiso', 'vina del mar',
+    'concepcion', 'temuco', 'antofagasta',
+    'la serena', 'iquique', 'puerto montt', 'rancagua', 'talca', 'chillan',
+    'osorno', 'punta arenas', 'arica', 'copiapo',
+    'puerto varas', 'pucon', 'villarrica', 'castro',
+    // Argentina/otros
+    'palermo', 'belgrano', 'caballito', 'san isidro',
+    'rosario', 'cordoba', 'mendoza', 'mar del plata',
+    'lima', 'miraflores', 'barranco',
+    'bogota', 'medellin', 'cali', 'cartagena',
+    'cdmx', 'guadalajara', 'monterrey', 'polanco', 'condesa', 'roma norte'
+  ];
+  for (var i = 0; i < zonas.length; i++) {
+    if (t.indexOf(zonas[i]) !== -1) {
+      // Devolver con primera letra mayuscula
+      var z = zonas[i];
+      return z.charAt(0).toUpperCase() + z.slice(1);
+    }
+  }
+  return null;
 }
 
 
@@ -2675,7 +2801,10 @@ function dismissScopeBanner() {
 // como competencia (juegan en otra liga).
 function renderCompetitionLevelWarning(brief, parsed) {
   var banner = document.getElementById('competitionLevelBanner');
-  if (!banner) return;
+  if (!banner) {
+    console.log('[KIVO][mismatch] banner element no encontrado - abort');
+    return;
+  }
 
   var pv = (parsed && parsed.propuesta_valor) || '';
   var ctx = (parsed && parsed.contexto) || '';
@@ -2684,14 +2813,24 @@ function renderCompetitionLevelWarning(brief, parsed) {
   var nivel = detectarNivelCompetitivo(brief, pv, ctx, presup);
   // Guardar el nivel detectado para que el prompt del plan lo use
   window.KIVO_NIVEL_COMPETITIVO = nivel;
+  console.log('[KIVO][mismatch] nivel detectado:', nivel);
 
   var competenciaTexto = '';
   var compEl = document.getElementById('competencia');
   if (compEl) competenciaTexto = compEl.value || '';
   // Tambien revisar lo que el usuario puso en el brief original como competencia
-  if (parsed && parsed.competencia) competenciaTexto += ' ' + parsed.competencia;
+  // FIX v3.3: parsed.competencia puede venir como array o como string. Normalizamos.
+  if (parsed && parsed.competencia) {
+    if (Array.isArray(parsed.competencia)) {
+      competenciaTexto += ' ' + parsed.competencia.join(', ');
+    } else {
+      competenciaTexto += ' ' + String(parsed.competencia);
+    }
+  }
+  console.log('[KIVO][mismatch] competenciaTexto:', competenciaTexto);
 
   var mismatch = detectarMismatchCompetencia(nivel, competenciaTexto);
+  console.log('[KIVO][mismatch] mismatch result:', mismatch ? 'SI' : 'NO');
   if (!mismatch) {
     banner.className = 'scope-banner';
     banner.innerHTML = '';
@@ -2836,7 +2975,8 @@ function detectarMismatchCompetencia(nivelCompetitivo, competenciaTexto) {
     'mercadolibre', 'mercado libre', 'linio',
     'corona', 'casaideas', 'paris.cl', 'falabella.com'
   ];
-  var t = competenciaTexto.toLowerCase();
+  // FIX v3.3: defensa contra competencia no-string
+  var t = String(competenciaTexto).toLowerCase();
   var hasGrandRetailer = false;
   var grandesEncontrados = [];
   grandesRetailersChile.forEach(function(g) {
@@ -3356,6 +3496,22 @@ async function generarPlan() {
   const fecha = gv('fechaInicio', '');
   const propuestaValor = document.getElementById('propuestaValor') ? document.getElementById('propuestaValor').value.trim() : '';
 
+  // FIX v3.3 - Acción 1: Re-evaluar el banner de mismatch competencia con los
+  // valores finales del UI (el usuario pudo haber editado el campo competencia
+  // después del análisis automático del brief). Esto resuelve el bug donde el
+  // banner se evaluaba con parsed.competencia vacío y nunca se volvía a mostrar.
+  if (typeof renderCompetitionLevelWarning === 'function') {
+    // Reconstruimos un parsed sintético con los valores actuales del UI
+    var parsedActual = {
+      competencia: competencia,
+      propuesta_valor: propuestaValor,
+      contexto: contexto,
+      presupuesto: presupuesto
+    };
+    var briefActual = (window.KIVO_LAST_BRIEF || '') + ' ' + (contexto || '') + ' ' + (propuestaValor || '');
+    renderCompetitionLevelWarning(briefActual, parsedActual);
+  }
+
   // FIX (2026-05 v2): Capturar capas extra de targeting fino
   // - Comportamientos de compra (chips): comprador frecuente, busqueda activa, etc.
   // - Intereses especificos (input texto libre): palabras clave del rubro/nicho
@@ -3488,6 +3644,16 @@ REGLAS CRITICAS:
 
 8. La estrategia debe ser la MEJOR decision posible, no la mas segura ni la mas generica. Un experto brillante toma decisiones valientes basadas en datos.
 
+8B. PROYECCIONES HONESTAS - leads NO son ventas:
+   - Si el plan recomienda Meta con CTA WhatsApp para un objetivo "Ventas", la proyeccion del KPI debe distinguir claramente:
+     * Lo que el plan puede entregar: leads, mensajes, conversaciones iniciadas por WhatsApp
+     * Lo que depende del cliente: cierre de venta, conversion del lead a transaccion
+   - NUNCA proyectes "100 ventas en 4 semanas" si la metrica de la plataforma es CPL. La conversion lead-a-venta en retail local depende del tiempo de respuesta, calidad de atencion y precio relativo del cliente, NO de la pauta digital
+   - Formato correcto del kpi_proyecciones cuando hay disconnect entre objetivo y metrica:
+     * Mal: {"kpi": "Ventas", "proyeccion": "100 ventas en 4 semanas"}
+     * Bien: {"kpi": "Leads / Mensajes WhatsApp (proxy a ventas)", "proyeccion": "100-130 mensajes WhatsApp iniciados. Conversion final a venta depende del cliente: tasa tipica 5-15% en retail = 5-20 ventas estimadas"}
+   - Esta regla es DURA. Es preferible bajar el numero proyectado y ser honesto que sobreprometer y quemar la relacion con el cliente cuando los resultados no lleguen.
+
 9. CRITERIOS DE EXITO FALSABLES - todo plan DEBE terminar con una hipotesis testeable a 14 dias:
    - hipotesis: una afirmacion numerica concreta que se puede confirmar o refutar. NO uses "la campana sera exitosa". USA "lograremos CPL menor a $X, o CTR mayor a Y%, o ROAS mayor a Z" segun el objetivo del cliente
    - metrica_principal: UNA sola metrica que determina si funciono. Para leads: CPL. Para ventas: ROAS. Para awareness: alcance unico + CPM. Para visitas: CPC + tasa de rebote. Elige la mas relevante al objetivo
@@ -3567,7 +3733,9 @@ NOTA SOBRE COPIES: el array "copies" debe tener 3 entradas por cada plataforma a
     //    no devolvio el campo, generamos reglas default basadas en el plan.
     planData = sanitizePlanOutput(planData, {
       cliente: cliente, categoria: categoria, objetivo: objetivo,
-      presupuesto: presupuesto, duracion: duracion, pais: pais
+      presupuesto: presupuesto, duracion: duracion, pais: pais,
+      brief: window.KIVO_LAST_BRIEF || '',
+      contexto: contexto, propuestaValor: propuestaValor
     });
 
     activePlatforms = planData.plataformas.map(function(p) { return p.nombre; });
