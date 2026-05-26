@@ -1027,7 +1027,7 @@ body::before {
           Ingresa las empresas que compiten directamente con tu cliente en el mismo producto o servicio. KIVO investigara sus estrategias digitales. Ejemplo: si el cliente vende dispensadores de agua, pon otras empresas que instalen dispensadores, no marcas de agua embotellada.
         </div>
         <div style="display:flex;gap:8px">
-          <input type="text" class="field-input" id="competencia" placeholder="Ej: Empresa A, Empresa B, Empresa C" style="flex:1" oninput="updateCompLinks()">
+          <input type="text" class="field-input" id="competencia" placeholder="Ej: Empresa A, Empresa B, Empresa C" style="flex:1" oninput="updateCompLinks(); rerunCompetitionLevelCheck();">
           <button type="button" class="btn-comp-search" id="btnCompSearch" onclick="buscarCompetencia()" style="display:none">🔍</button>
         </div>
         <div id="compLinks" style="display:none;margin-top:8px;display:flex;flex-direction:column;gap:4px"></div>
@@ -1493,6 +1493,144 @@ window.addEventListener('unhandledrejection', function(event) {
     if (btn) btn.disabled = false;
   }
 });
+
+// --- SANITIZE PLAN OUTPUT --------------------------------
+// FIX BUG 2 + Mejora 4 (2026-05 v3): Defensa profunda contra outputs mediocres
+// del LLM. Aunque el prompt prohibe cliches y exige >=3 reglas de reasignacion,
+// el modelo a veces los devuelve igual. Esta funcion atrapa esos casos en el
+// codigo y corrige antes de renderizar.
+//
+// Responsabilidades:
+//  1. Detectar copies con cliches o numeros inventados -> agregar tip de aviso
+//  2. Forzar minimo 3 reglas en criterios_exito.reglas_reasignacion
+//  3. Calibrar umbral_exito CPL para realidades de pixel frio en Chile
+function sanitizePlanOutput(plan, brief) {
+  if (!plan) return plan;
+
+  // ---- 1) Copies: detectar cliches y numeros inventados ----
+  // Patrones que indican copy mediocre o numero inventado.
+  var clichesCopy = [
+    'descubre nuestra', 'descubre la', 'descubre el',
+    'encuentra tu estilo', 'encuentra lo que buscas',
+    'lo que estabas buscando', 'para todos los gustos',
+    'la mejor calidad al mejor precio', 'mejor calidad mejor precio',
+    'amplia variedad', 'gran variedad',
+    'precios competitivos', 'mejores precios del mercado',
+    'satisfaccion garantizada', 'atencion personalizada'
+  ];
+  // Patrones de numeros inventados. Si el copy menciona un numero de clientes,
+  // anos, ventas o ratings, lo marcamos como sospechoso para que el freelancer
+  // verifique antes de publicar.
+  var numerosInventadosRegex = /(?:\+\s*de\s*\d+|mas\s+de\s+\d+|\d+\.\d+\s+clientes|\d+\+?\s+(?:clientes|ventas|anos|estrellas))/i;
+
+  if (plan.copies && plan.copies.length) {
+    plan.copies = plan.copies.map(function(c) {
+      if (!c) return c;
+      var titular = (c.titular || '').toLowerCase();
+      var descripcion = (c.descripcion || '').toLowerCase();
+      var combined = titular + ' ' + descripcion;
+      var warnings = [];
+
+      for (var i = 0; i < clichesCopy.length; i++) {
+        if (combined.indexOf(clichesCopy[i]) !== -1) {
+          warnings.push('Cliche detectado: "' + clichesCopy[i] + '"');
+          break;
+        }
+      }
+
+      var origTitular = c.titular || '';
+      var origDesc = c.descripcion || '';
+      if (numerosInventadosRegex.test(origTitular) || numerosInventadosRegex.test(origDesc)) {
+        warnings.push('Numero sin verificar (cantidad de clientes/ventas/anos) - editar antes de publicar');
+      }
+
+      if (warnings.length > 0) {
+        c.nota = '[AVISO KIVO] ' + warnings.join(' | ') + (c.nota ? ' / ' + c.nota : '');
+      }
+      return c;
+    });
+  }
+
+  // ---- 2) Forzar minimo 3 reglas de reasignacion ----
+  if (!plan.criterios_exito) plan.criterios_exito = {};
+  if (!plan.criterios_exito.reglas_reasignacion) plan.criterios_exito.reglas_reasignacion = [];
+
+  // Filtrar reglas vacias o incompletas
+  plan.criterios_exito.reglas_reasignacion = plan.criterios_exito.reglas_reasignacion.filter(function(r) {
+    return r && r.si && r.entonces && r.si.trim() && r.entonces.trim();
+  });
+
+  // Si despues de filtrar hay menos de 3, generar reglas default basadas en plataforma+objetivo
+  if (plan.criterios_exito.reglas_reasignacion.length < 3) {
+    var platformsList = (plan.plataformas || []).map(function(p) { return p.nombre; });
+    var mainPlat = platformsList[0] || 'Meta';
+    var hasWA = platformsList.some(function(p) { return p && p.toLowerCase().indexOf('whatsapp') !== -1; });
+    var objetivo = (brief && brief.objetivo) || 'leads';
+    var metricaCosto = (objetivo === 'ventas' || objetivo === 'leads') ? 'CPL' : 'CPC';
+    // CPL/CPC realista por pais. Para Chile pixel frio retail local: CPL $8-15 USD primer mes.
+    var pais = (brief && brief.pais) || 'Chile';
+    var umbralCPL = (pais === 'Chile' || pais === 'Peru' || pais === 'Colombia') ? '$12 USD' : '$15 USD';
+
+    var defaults = [
+      {
+        si: metricaCosto + ' en ' + mainPlat + ' supera ' + umbralCPL + ' al dia 14',
+        entonces: 'pausar los 2 ad sets con peor performance, escalar 50% del presupuesto al ad set con ' + metricaCosto + ' mas bajo, y cambiar las creatividades de los pausados'
+      },
+      {
+        si: 'CTR en ' + mainPlat + ' menor a 1.0% en todas las creatividades al dia 14',
+        entonces: 'cambiar las 3 creatividades por nuevas con hooks distintos (precio explicito, urgencia, comparativo local)'
+      },
+      {
+        si: 'frecuencia en ' + mainPlat + ' supera 4x antes del dia 14',
+        entonces: 'ampliar audiencia agregando intereses adyacentes o comunas vecinas, o duplicar el rango de edad'
+      }
+    ];
+
+    if (hasWA) {
+      defaults.push({
+        si: 'tasa de respuesta a WhatsApp menor a 60% en los leads recibidos',
+        entonces: 'reducir gasto en ' + mainPlat + ' hasta resolver tiempos de respuesta - sin respuesta rapida los leads se desperdician'
+      });
+    }
+
+    // Agregar defaults hasta llegar a 3 reglas minimo
+    var existing = plan.criterios_exito.reglas_reasignacion;
+    for (var d = 0; d < defaults.length && existing.length < 3; d++) {
+      // Evitar duplicar si por casualidad el modelo ya devolvio algo similar
+      var alreadyHas = existing.some(function(r) {
+        return r.si && r.si.toLowerCase().indexOf(defaults[d].si.split(' ')[0].toLowerCase()) !== -1
+          && r.si.toLowerCase().indexOf('supera') !== -1
+          && defaults[d].si.toLowerCase().indexOf('supera') !== -1;
+      });
+      if (!alreadyHas) existing.push(defaults[d]);
+    }
+    plan.criterios_exito.reglas_reasignacion = existing;
+  }
+
+  // ---- 3) Calibrar umbral_exito CPL para realidad de pixel frio Chile ----
+  // Si el modelo prometio CPL menor a $5 USD para Chile/LATAM con plataforma de
+  // Meta nueva, eso es irreal en pixel frio primer mes. Lo escalamos a $10-12.
+  if (plan.criterios_exito.umbral_exito && plan.criterios_exito.metrica_principal) {
+    var umbral = plan.criterios_exito.umbral_exito.toLowerCase();
+    var metrica = plan.criterios_exito.metrica_principal.toLowerCase();
+    var pais2 = (brief && brief.pais) || 'Chile';
+    var esLatam = ['chile','peru','colombia','argentina','mexico','ecuador','bolivia','paraguay','uruguay'].indexOf(pais2.toLowerCase()) !== -1;
+
+    // Match CPL muy bajo: "menor a $3", "menor a $4", "menor a $5"
+    var bajoMatch = umbral.match(/\$([1-5])(?:\s*usd)?/);
+    if (esLatam && metrica.indexOf('cpl') !== -1 && bajoMatch) {
+      var valorBajo = parseInt(bajoMatch[1], 10);
+      if (valorBajo <= 5) {
+        plan.criterios_exito.umbral_exito = 'Menor a $12 USD primer mes (pixel frio), bajando a $8 USD al mes 3 cuando el algoritmo aprenda';
+        // Agregar a advertencias
+        if (!plan.advertencias) plan.advertencias = [];
+        plan.advertencias.push('Umbral CPL ajustado: KIVO calibro el objetivo a $12 USD primer mes en lugar de un valor menor, porque un pixel nuevo en Meta necesita 50+ conversiones para aprender. Prometer CPL <$5 USD desde dia 1 es irreal y quema la relacion con el cliente cuando no se cumple.');
+      }
+    }
+  }
+
+  return plan;
+}
 
 
 // --- STATE -----------------------------------------------
@@ -2412,7 +2550,7 @@ async function analyzeCompetitors(competencia, pais, categoria, objetivo) {
 
   const brands = competencia.split(',').map(function(b) { return b.trim(); }).filter(Boolean);
 
-  const prompt = 'Eres un experto en inteligencia competitiva publicitaria en LATAM. El cliente es de la categoria: ' + categoria + '. Analiza el comportamiento publicitario probable de estas marcas en ' + pais + '. IMPORTANTE: Solo analiza las marcas que sean competidores directos del mismo rubro. Si alguna marca NO es competidor directo del cliente en categoria ' + categoria + ', excluyela del analisis. Para cada marca relevante entrega: plataformas donde estan activos (max 3), su mensaje clave en 1 frase corta, y 1 oportunidad clara de diferenciacion. Marcas a evaluar: ' + brands.join(', ') + '. Responde SOLO con JSON valido: {"analisis":[{"marca":"nombre","plataformas":"Meta, Google","mensaje":"frase corta del mensaje","oportunidad":"oportunidad concreta en 1 frase"}]}';
+  const prompt = 'Eres un experto en inteligencia competitiva publicitaria en LATAM con criterio de planner senior. El cliente es de la categoria: ' + categoria + '. Analiza el comportamiento publicitario probable de estas marcas en ' + pais + '. IMPORTANTE: Solo analiza las marcas que sean competidores directos del mismo rubro. Si alguna marca NO es competidor directo del cliente en categoria ' + categoria + ', excluyela del analisis. Para cada marca relevante entrega: plataformas donde estan activos (max 3), su mensaje clave en 1 frase corta, y 1 oportunidad ESPECIFICA y ACCIONABLE de diferenciacion. REGLAS PARA LA OPORTUNIDAD: (a) NO uses generalidades vacias tipo "ofrecer experiencias personalizadas", "aumentar lealtad", "mejorar atencion al cliente". Eso es exactamente en lo que esas marcas grandes invierten millones. (b) La oportunidad debe explotar una DEBILIDAD ESTRUCTURAL de la marca grande: tiempos de despacho (vs entrega inmediata local), trato impersonal (vs atencion cara a cara), surtido masivo sin curaduria (vs seleccion experta), precios fijos (vs negociacion), web compleja (vs WhatsApp directo). (c) La oportunidad debe ser algo que un negocio chico PUEDE realmente ofrecer, no algo aspiracional. (d) Maximo 12 palabras, en infinitivo y con un verbo de accion concreto. Marcas a evaluar: ' + brands.join(', ') + '. Responde SOLO con JSON valido: {"analisis":[{"marca":"nombre","plataformas":"Meta, Google","mensaje":"frase corta del mensaje","oportunidad":"oportunidad concreta accionable y especifica"}]}';
 
   try {
     const raw = await safeGroqCall(prompt, 1000, 2);
@@ -2568,6 +2706,22 @@ function dismissCompetitionLevelBanner() {
     banner.innerHTML = '';
   }
   console.log('[KIVO] Competition level warning dismissed por el usuario.');
+}
+
+// FIX BUG 1 (2026-05 v3): Funcion reutilizable para re-evaluar el banner de
+// mismatch competencia. Se llama:
+//  - Despues de que buscarCompetenciaAuto escribe al campo (caso B)
+//  - Cuando el usuario edita manualmente el campo competencia (oninput)
+//  - Despues del autofill de fields del brief (delayed)
+// Esto resuelve el bug donde el banner no se mostraba porque al ejecutarse
+// renderCompetitionLevelWarning, el campo competencia todavia estaba vacio.
+function rerunCompetitionLevelCheck() {
+  // Necesitamos el ultimo brief analizado para tener el contexto.
+  // Lo guardamos en window cada vez que se analiza para poder re-evaluarlo.
+  var brief = window.KIVO_LAST_BRIEF || '';
+  var parsed = window.KIVO_LAST_PARSED || {};
+  if (!brief && !parsed) return;
+  renderCompetitionLevelWarning(brief, parsed);
 }
 
 // --- AUTO-INVESTIGAR COMPETENCIA -------------------------
@@ -2794,6 +2948,14 @@ async function buscarCompetenciaAuto(categoria, pais, cliente, propuestaValor, b
 
       // Update competition links
       updateCompLinks();
+
+      // FIX BUG 1 (2026-05 v3): re-evaluar banner de mismatch competencia
+      // despues de que buscarCompetenciaAuto escriba al campo. El banner se
+      // evalua una vez al parsear brief, pero si en ese momento parsed.competencia
+      // estaba vacia y el campo se llena recien aca, hay que re-evaluar.
+      if (typeof rerunCompetitionLevelCheck === 'function') {
+        rerunCompetitionLevelCheck();
+      }
     }
   } catch(e) {
     if (compEl) compEl.placeholder = 'Ej: Falabella, Ripley';
@@ -3014,7 +3176,15 @@ INTERESES: Compras, Finanzas, Tecnolog\u00eda, Deporte, Familia, Viajes, Gaming,
     // FIX (2026-05 v2): Detectar nivel competitivo y mostrar warning si la
     // competencia ingresada no es coherente con ese nivel (ej: tienda hiperlocal
     // que pone Falabella/Paris/Ripley como competencia).
+    // FIX BUG 1 (2026-05 v3): guardar brief y parsed en window para que se
+    // pueda re-evaluar el banner mas tarde si la competencia se llena async.
+    window.KIVO_LAST_BRIEF = brief;
+    window.KIVO_LAST_PARSED = parsed;
     renderCompetitionLevelWarning(brief, parsed);
+    // Re-evaluar tras un delay para capturar el caso en que buscarCompetenciaAuto
+    // o el autofill llenan el campo competencia despues. Damos un margen amplio
+    // (3 segundos) que cubre el async del LLM.
+    setTimeout(function() { rerunCompetitionLevelCheck(); }, 3500);
     status.className = 'brief-status';
 
     // Mark missing fields immediately after autofill animations
@@ -3245,7 +3415,11 @@ REGLAS CRITICAS:
    - Si recomiendas 1 sola plataforma con presupuesto total mayor a $1,500 USD, justifica por que (audiencia muy especifica, material limitado, etc.)
    - NUNCA recomiendes 3 plataformas si el presupuesto total mensualizado es menor a $3,000 USD
 3. La frecuencia ideal para leads es 2-3x. Si proyectas mas de 3.5x, es obligatorio agregar una segunda plataforma para distribuir impresiones.
-4. Para servicios locales en LATAM con objetivo leads: Meta con CTA WhatsApp convierte 3-5x mejor que formulario web (fuente: Meta Business 2024). Priorizar siempre.
+4. Para servicios locales en LATAM con objetivo leads: Meta con CTA WhatsApp convierte 3-5x mejor que formulario web (fuente: Meta Business 2024). Priorizar siempre EXCEPTO cuando:
+   - El cliente no puede garantizar respuesta en <15 minutos durante horario comercial (data: 65% de consumidores espera respuesta en menos de 5 min, satisfaccion cae fuerte despues de 15 min)
+   - El cliente vende productos de ticket muy alto (>$1000 USD) donde el lead necesita educacion previa antes del chat
+   En esos casos, alternativas: formulario web con remarketing por email/SMS, o Click-to-Call para servicios urgentes
+   IMPORTANTE: en la "razon_seleccion" o "estrategia" cuando recomiendes Meta con CTA WhatsApp, incluye SIEMPRE una advertencia operativa: "Esta recomendacion asume que el cliente responde WhatsApp en menos de 15 minutos durante horario comercial. Si no es asi, conviene cambiar a formulario web."
 5. Google Performance Max es preferible a Search + Display separados cuando presupuesto Google es menor a $1,500 USD. La IA de Google optimiza mejor con presupuesto consolidado.
 6. Si frecuencia proyectada supera 4x: ADVERTIR y recomendar ampliar audiencia o agregar segunda plataforma.
 7. COPIES DE PERFORMANCE (NO copies "bonitos") - cada copy debe seguir estructura comprobada:
@@ -3259,22 +3433,64 @@ REGLAS CRITICAS:
    - Para negocios HIPERLOCALES o LOCALES: el copy DEBE mencionar la zona geografica (ej: "en Maipu", "a 5 minutos de Plaza Las Lilas")
    - El CTA debe ser una accion concreta, no "Mas info". Usar "Llama ya", "Reserva hoy", "Conoce el modelo X", "Ven a probar"
    - Longitud: titular max 40 caracteres (Meta), descripcion max 90 caracteres. Esto es regla dura para que se vea bien en mobile.
+   - PROHIBIDO INVENTAR NUMEROS: nunca uses "+ de 1000 clientes", "5.000 ventas", "anos de experiencia", testimonios, ratings, o cifras que no podes verificar. El modelo no sabe cuantos clientes tiene el negocio. Si no hay datos verificables, el Hook Social Proof debe usar OTRAS formas de prueba:
+     * Geo-prueba: "Atendemos a vecinos de Maipu desde el primer dia"
+     * Diferencial verificable: "Marcas que solo encuentras importando o aca"
+     * Pertenencia: "Tu zapateria del barrio, no una multitienda"
+     * Comparativo concreto: "Sin filas, sin estacionamiento de mall"
+   - PROHIBIDO usar formulaciones de copy mediocre: "Descubre nuestra variedad", "La mejor calidad al mejor precio", "Encuentra tu estilo", "Lo que estabas buscando", "Para todos los gustos". Estos son sintomas de modelo perezoso. Si te encontras escribiendo algo asi, reemplazalo por algo especifico al cliente.
+   - Para el Hook Emocional: NO uses "Encuentra tu estilo" o equivalentes vacios. Usa una emocion concreta: frustracion ("Cansado de probarte zapatillas en tiendas con poco stock?"), aspiracion ("Las que usan los runners de la maraton de Santiago"), pertenencia ("Si vives en Maipu y odias el mall, leeme")
+7B. AUDIENCIA INTELIGENTE - cuestiona la audiencia que el usuario ingresa, no la copies ciegamente:
+   - El campo "Audiencia" del UI (edad + NSE) es solo un punto de partida. Si el brief o la propuesta de valor indican algo distinto, AJUSTA y EXPLICA.
+   - Senales para escalar el NSE (de Masivo a C1-C2 o ABC1):
+     * "importado", "marca premium", "limitado", "exclusivo", "hecho a mano", "artesanal", "cuero", "italiano", "europeo"
+     * Categoria + precio implicito alto (zapatillas importadas de running tienden a ser $80-150 USD el par, eso ya es C1-C2)
+     * Diferencial que apela a "calidad" mas que a "precio"
+   - Senales para acotar la edad:
+     * Producto que apela a vida adulta (zapatillas running maraton 30-49, zapatos de oficina 30-55, zapatillas para nina 25-44 madre tipica)
+     * Si el cliente dice "18-34 masivo" pero el producto es importado, sugiere "25-44 NSE C1-C2 con ingresos comprobados" en la seccion "estrategia" o "por_que" y explica la razon brevemente
+   - REGLA: si detectas mismatch entre la audiencia ingresada y el producto, en el campo "estrategia" comienza con: "Nota sobre audiencia: el brief sugiere 18-34 masivo, pero por el producto (zapatillas importadas) recomendamos targetear 25-44 NSE C1-C2 desde el inicio. La audiencia masiva genera alcance pero baja conversion. Ajustamos la recomendacion."
+
+7C. TIMING ADAPTATIVO AL OBJETIVO Y PRESUPUESTO - no copy-paste de funnel awareness->consideracion->conversion->retencion:
+   - El funnel clasico de 4 semanas (Semana 1 awareness, 2 consideracion, 3 conversion, 4 retencion) es lujo de marcas con presupuesto a 6 meses. Para presupuestos chicos (<$2K USD totales) es ineficiente: cada peso debe traer un lead/venta.
+   - REGLA DE TIMING:
+     * Si objetivo es Awareness y presupuesto >$3K USD totales: funnel clasico OK
+     * Si objetivo es Leads/Ventas y presupuesto <$2K USD: CONVERSION DIRECTA DESDE SEMANA 1. El "foco" de cada semana es una iteracion sobre creatividades y audiencias, no un cambio de etapa del funnel.
+     * Si objetivo es Leads/Ventas y presupuesto $2K-$5K: 2 semanas de conversion + audiencia amplia, 2 semanas de remarketing/escalamiento de los segmentos que mejor convirtieron.
+     * Si objetivo es Visitas (offline): igual que Leads/Ventas, conversion directa con geo-targeting estrecho.
+   - El "foco" de cada semana NO debe ser una etiqueta del funnel ("Conocimiento de marca", "Consideracion"). Debe ser UNA ACCION CONCRETA del optimizador:
+     * Mal: "Semana 1: Conocimiento de marca"
+     * Bien: "Semana 1: Lanzar 3 ad sets con creatividades diferentes (precio/emocional/social proof). Audiencia amplia 25-44 NSE C1-C2 + intereses running. Objetivo: identificar la creatividad ganadora."
+   - Esto convierte el timing en un PLAN OPERATIVO que el freelancer puede ejecutar, no un PDF bonito que el cliente firma y guarda.
+
 8. La estrategia debe ser la MEJOR decision posible, no la mas segura ni la mas generica. Un experto brillante toma decisiones valientes basadas en datos.
 
 9. CRITERIOS DE EXITO FALSABLES - todo plan DEBE terminar con una hipotesis testeable a 14 dias:
    - hipotesis: una afirmacion numerica concreta que se puede confirmar o refutar. NO uses "la campana sera exitosa". USA "lograremos CPL menor a $X, o CTR mayor a Y%, o ROAS mayor a Z" segun el objetivo del cliente
    - metrica_principal: UNA sola metrica que determina si funciono. Para leads: CPL. Para ventas: ROAS. Para awareness: alcance unico + CPM. Para visitas: CPC + tasa de rebote. Elige la mas relevante al objetivo
-   - umbral_exito: numero concreto, no rango vago. Calcula segun benchmarks de la categoria/pais. Ej: "CPL menor a $3 USD", "ROAS mayor a 1.5x", "CPM menor a $4 USD con frecuencia entre 2-3"
+   - umbral_exito: numero concreto, no rango vago. CALIBRACION POR MADUREZ DEL PIXEL ES OBLIGATORIA:
+     * Si el negocio es NUEVO o sin historial de pixel Meta: usar benchmarks de "fase de aprendizaje" (CPL 1.8x-2x el de un pixel maduro). Para retail local Chile pixel frio: CPL $8-15 USD primer mes es realista, NO $3-5 USD que es de pixel maduro mes 3+
+     * Si el negocio tiene historial: usar benchmarks de pixel maduro
+     * NUNCA prometas CPL menor a $5 USD para un negocio que recien arranca en Meta. Es una promesa que va a quemar la relacion con el cliente cuando no se cumpla en semana 3
    - punto_decision: siempre "Dia 14" (mitad de campana de 4 semanas, suficiente data para decidir, queda tiempo para corregir)
-   - reglas_reasignacion: 2-4 reglas IF-THEN concretas que el freelancer ejecuta automaticamente el dia 14. Cada regla tiene formato "si: [condicion observable]" + "entonces: [accion concreta]". Ejemplos:
-     * "si CPL en Meta supera $5 USD -> entonces pausar set de anuncios A y B, dejar solo C que mejor performa"
-     * "si CTR menor a 1% en todas las creatividades -> entonces cambiar las 3 creatividades por nuevas con hook distinto"
-     * "si frecuencia supera 4x antes del dia 14 -> entonces ampliar audiencia o agregar 2da plataforma"
-   - Las reglas deben ser ESPECIFICAS al plan que estas armando, no copy-paste generico. Si el plan recomienda Meta + Google PMax, las reglas deben referirse a Meta y Google PMax por nombre.
+   - reglas_reasignacion: MINIMO 3 reglas, MAXIMO 5. Esta es una regla DURA del schema. Si entregas solo 1 regla, el plan se rechaza. Cada regla tiene formato {"si": "condicion observable y medible", "entonces": "accion concreta y ejecutable"}.
+   - Las reglas deben cubrir 3 escenarios obligatorios:
+     (a) Regla de CPL/CPA alto: que hacer si el costo por accion principal supera el umbral
+     (b) Regla de CTR bajo: que hacer si las creatividades no enganchan
+     (c) Regla de saturacion: que hacer si la frecuencia se dispara antes de tiempo
+   - Cada accion debe ser ESPECIFICA al plan que estas armando. Si el plan recomienda Meta con CTA WhatsApp, las reglas deben mencionar "Meta", "WhatsApp", "ad set", "creatividad", no genericos.
+   - EJEMPLO DE OUTPUT VALIDO (esto es lo que debes devolver, adaptado al caso real):
+     "reglas_reasignacion": [
+       {"si": "CPL en Meta supera $12 USD al dia 14", "entonces": "pausar los 2 ad sets con peor performance, escalar 50% el ad set con CPL mas bajo, y cambiar las creatividades del set pausado"},
+       {"si": "CTR de Meta menor a 1.0% en todas las 3 creatividades al dia 14", "entonces": "cambiar las 3 creatividades por nuevas con hooks distintos: enfasis en zona geografica + urgencia + descuento explicito"},
+       {"si": "frecuencia en Meta supera 4x antes del dia 14", "entonces": "ampliar audiencia agregando comunas vecinas (Pudahuel, Cerrillos, Estacion Central) o duplicar el rango de edad"}
+     ]
+   - EJEMPLO DE OUTPUT INVALIDO (NO devuelvas esto, es lo que estas haciendo mal): una sola regla vaga del tipo "Si CPL alto, ajustar audiencia y copies". Eso no es accionable.
 
 BRIEF:
 - Cliente: ${cliente} | Categoria: ${categoria} | Pais: ${pais}
 - Objetivo: ${objetivo} | KPIs: ${kpi}
+NOTA SOBRE COHERENCIA: si el objetivo es "Ventas" o "Leads" pero los KPIs activos solo son "Visitas" o "Engagement" (sin tracking de conversion), advierte al usuario en "advertencias" que sin pixel de Meta + evento de conversion configurado, los KPIs propuestos no se podran medir bien. Sugiere instalar Pixel + Conversion API + verificar dominio antes de pautar.
 - Presupuesto: USD ${Number(presupuesto).toLocaleString()} | Duracion: ${duracion} sem | Audiencia: ${edad}
 ${competencia?`- Competencia: ${competencia}`:''}${propuestaValor?`\n- Propuesta de valor / Diferencial: ${propuestaValor}`:''}${fecha?`\n- Inicio: ${fecha}`:''}${contexto?`\n- Contexto: ${contexto}`:''}
 - ${nseContexto}
@@ -3320,6 +3536,17 @@ NOTA SOBRE COPIES: el array "copies" debe tener 3 entradas por cada plataforma a
     var raw = await safeGroqCall(prompt, 4000, 2);
     planData = safeExtractJSON(raw);
     if (!planData || !planData.plataformas) throw new Error('JSON invalido o sin plataformas. Respuesta: ' + raw.substring(0, 150));
+
+    // FIX BUG 2 + Mejora 4 (2026-05 v3): Defensa profunda en el output del modelo.
+    // 1) Sanitizar copies: si el modelo desobedecio la regla 7 y devolvio copies
+    //    con cliches o numeros inventados, los marcamos con advertencia.
+    // 2) Forzar minimo 3 reglas_reasignacion: si el modelo solo devolvio 1 o
+    //    no devolvio el campo, generamos reglas default basadas en el plan.
+    planData = sanitizePlanOutput(planData, {
+      cliente: cliente, categoria: categoria, objetivo: objetivo,
+      presupuesto: presupuesto, duracion: duracion, pais: pais
+    });
+
     activePlatforms = planData.plataformas.map(function(p) { return p.nombre; });
     renderResult(planData, { cliente: cliente, categoria: categoria, objetivo: objetivo, kpi: kpi, presupuesto: presupuesto, duracion: duracion, pais: pais, edad: edad, material: material, competencia: competencia });
   } catch(e) {
