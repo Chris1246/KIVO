@@ -1526,8 +1526,8 @@ function sanitizePlanOutput(plan, brief) {
   if (plan.copies && plan.copies.length) {
     plan.copies = plan.copies.map(function(c) {
       if (!c) return c;
-      var titular = (c.titular || '').toLowerCase();
-      var descripcion = (c.descripcion || '').toLowerCase();
+      var titular = String(c.titular || '').toLowerCase();
+      var descripcion = String(c.descripcion || '').toLowerCase();
       var combined = titular + ' ' + descripcion;
       var warnings = [];
 
@@ -1538,8 +1538,8 @@ function sanitizePlanOutput(plan, brief) {
         }
       }
 
-      var origTitular = c.titular || '';
-      var origDesc = c.descripcion || '';
+      var origTitular = String(c.titular || '');
+      var origDesc = String(c.descripcion || '');
       if (numerosInventadosRegex.test(origTitular) || numerosInventadosRegex.test(origDesc)) {
         warnings.push('Numero sin verificar (cantidad de clientes/ventas/anos) - editar antes de publicar');
       }
@@ -1557,7 +1557,7 @@ function sanitizePlanOutput(plan, brief) {
 
   // Filtrar reglas vacias o incompletas
   plan.criterios_exito.reglas_reasignacion = plan.criterios_exito.reglas_reasignacion.filter(function(r) {
-    return r && r.si && r.entonces && r.si.trim() && r.entonces.trim();
+    return r && r.si && r.entonces && String(r.si).trim() && String(r.entonces).trim();
   });
 
   // Si despues de filtrar hay menos de 3, generar reglas default basadas en plataforma+objetivo
@@ -1610,22 +1610,32 @@ function sanitizePlanOutput(plan, brief) {
   // ---- 3) Calibrar umbral_exito CPL para realidad de pixel frio Chile ----
   // Si el modelo prometio CPL menor a $5 USD para Chile/LATAM con plataforma de
   // Meta nueva, eso es irreal en pixel frio primer mes. Lo escalamos a $10-12.
+  // FIX RUNTIME BUG (2026-05 v3.1): el modelo a veces devuelve umbral_exito o
+  // metrica_principal como numero en lugar de string. Convertir a String() antes
+  // de operar para evitar "toLowerCase is not a function".
   if (plan.criterios_exito.umbral_exito && plan.criterios_exito.metrica_principal) {
-    var umbral = plan.criterios_exito.umbral_exito.toLowerCase();
-    var metrica = plan.criterios_exito.metrica_principal.toLowerCase();
+    var umbral = String(plan.criterios_exito.umbral_exito).toLowerCase();
+    var metrica = String(plan.criterios_exito.metrica_principal).toLowerCase();
     var pais2 = (brief && brief.pais) || 'Chile';
     var esLatam = ['chile','peru','colombia','argentina','mexico','ecuador','bolivia','paraguay','uruguay'].indexOf(pais2.toLowerCase()) !== -1;
 
-    // Match CPL muy bajo: "menor a $3", "menor a $4", "menor a $5"
-    var bajoMatch = umbral.match(/\$([1-5])(?:\s*usd)?/);
-    if (esLatam && metrica.indexOf('cpl') !== -1 && bajoMatch) {
-      var valorBajo = parseInt(bajoMatch[1], 10);
-      if (valorBajo <= 5) {
-        plan.criterios_exito.umbral_exito = 'Menor a $12 USD primer mes (pixel frio), bajando a $8 USD al mes 3 cuando el algoritmo aprenda';
-        // Agregar a advertencias
-        if (!plan.advertencias) plan.advertencias = [];
-        plan.advertencias.push('Umbral CPL ajustado: KIVO calibro el objetivo a $12 USD primer mes en lugar de un valor menor, porque un pixel nuevo en Meta necesita 50+ conversiones para aprender. Prometer CPL <$5 USD desde dia 1 es irreal y quema la relacion con el cliente cuando no se cumple.');
-      }
+    // Match CPL muy bajo: "menor a $3", "menor a $4", "$5 USD", "5 USD", "<3", o number plano "5"
+    // FIX v3.2: detector mas robusto. El LLM devuelve umbral en formatos variados:
+    //   string: "Menor a $5 USD" -> matchea $5
+    //   string: "menos de 5 usd" -> matchea 5
+    //   number: 5 -> stringified "5" -> matchea 5
+    // El extractor encuentra el primer numero <=10 en el texto (es ms confiable).
+    var numbersInUmbral = umbral.match(/\d+(?:\.\d+)?/g) || [];
+    var minValor = null;
+    for (var nu = 0; nu < numbersInUmbral.length; nu++) {
+      var v = parseFloat(numbersInUmbral[nu]);
+      if (v > 0 && v <= 10 && (minValor === null || v < minValor)) minValor = v;
+    }
+    if (esLatam && metrica.indexOf('cpl') !== -1 && minValor !== null && minValor <= 5) {
+      plan.criterios_exito.umbral_exito = 'Menor a $12 USD primer mes (pixel frio), bajando a $8 USD al mes 3 cuando el algoritmo aprenda';
+      // Agregar a advertencias
+      if (!plan.advertencias) plan.advertencias = [];
+      plan.advertencias.push('Umbral CPL ajustado: KIVO calibro el objetivo a $12 USD primer mes en lugar de un valor menor, porque un pixel nuevo en Meta necesita 50+ conversiones para aprender. Prometer CPL <$5 USD desde dia 1 es irreal y quema la relacion con el cliente cuando no se cumple.');
     }
   }
 
@@ -2494,7 +2504,10 @@ function buscarCompetencia() {
 
 function buildCompIntelHTML(competencia, pais, categoria) {
   if (!competencia) return '';
+  // FIX RUNTIME v3.1: defensa contra competencia no-string
+  competencia = String(competencia);
   const brands = competencia.split(',').map(function(b) { return b.trim(); }).filter(Boolean);
+  if (brands.length === 0) return '';
   const countryCode = { 'Chile': 'CL', 'M\u00e9xico': 'MX', 'Colombia': 'CO', 'Per\u00fa': 'PE', 'Argentina': 'AR' }[pais] || 'CL';
 
   const brandRows = brands.map(function(brand) {
@@ -2545,10 +2558,13 @@ function buildCompIntelHTML(competencia, pais, categoria) {
 
 async function analyzeCompetitors(competencia, pais, categoria, objetivo) {
   if (!competencia) return;
+  // FIX RUNTIME v3.1: blindar contra competencia que no sea string
+  competencia = String(competencia);
   const container = document.getElementById('compAnalysisContainer');
   if (!container) return;
 
   const brands = competencia.split(',').map(function(b) { return b.trim(); }).filter(Boolean);
+  if (brands.length === 0) return;
 
   const prompt = 'Eres un experto en inteligencia competitiva publicitaria en LATAM con criterio de planner senior. El cliente es de la categoria: ' + categoria + '. Analiza el comportamiento publicitario probable de estas marcas en ' + pais + '. IMPORTANTE: Solo analiza las marcas que sean competidores directos del mismo rubro. Si alguna marca NO es competidor directo del cliente en categoria ' + categoria + ', excluyela del analisis. Para cada marca relevante entrega: plataformas donde estan activos (max 3), su mensaje clave en 1 frase corta, y 1 oportunidad ESPECIFICA y ACCIONABLE de diferenciacion. REGLAS PARA LA OPORTUNIDAD: (a) NO uses generalidades vacias tipo "ofrecer experiencias personalizadas", "aumentar lealtad", "mejorar atencion al cliente". Eso es exactamente en lo que esas marcas grandes invierten millones. (b) La oportunidad debe explotar una DEBILIDAD ESTRUCTURAL de la marca grande: tiempos de despacho (vs entrega inmediata local), trato impersonal (vs atencion cara a cara), surtido masivo sin curaduria (vs seleccion experta), precios fijos (vs negociacion), web compleja (vs WhatsApp directo). (c) La oportunidad debe ser algo que un negocio chico PUEDE realmente ofrecer, no algo aspiracional. (d) Maximo 12 palabras, en infinitivo y con un verbo de accion concreto. Marcas a evaluar: ' + brands.join(', ') + '. Responde SOLO con JSON valido: {"analisis":[{"marca":"nombre","plataformas":"Meta, Google","mensaje":"frase corta del mensaje","oportunidad":"oportunidad concreta accionable y especifica"}]}';
 
@@ -2719,9 +2735,11 @@ function rerunCompetitionLevelCheck() {
   // Necesitamos el ultimo brief analizado para tener el contexto.
   // Lo guardamos en window cada vez que se analiza para poder re-evaluarlo.
   var brief = window.KIVO_LAST_BRIEF || '';
-  var parsed = window.KIVO_LAST_PARSED || {};
+  var parsed = window.KIVO_LAST_PARSED || null;
+  // Si todavia no se analizo ningun brief, no hay contexto para evaluar mismatch.
+  // Esto puede pasar si el usuario edita el campo competencia antes de analizar.
   if (!brief && !parsed) return;
-  renderCompetitionLevelWarning(brief, parsed);
+  renderCompetitionLevelWarning(brief, parsed || {});
 }
 
 // --- AUTO-INVESTIGAR COMPETENCIA -------------------------
@@ -3021,7 +3039,8 @@ INTERESES: Compras, Finanzas, Tecnolog\u00eda, Deporte, Familia, Viajes, Gaming,
       'retencion': 'retencion', 'retenci\u00f3n': 'retencion'
     };
     if (parsed.objetivo) {
-      var objLower = parsed.objetivo.toLowerCase().trim();
+      // FIX RUNTIME v3.1: blindar contra LLM que devuelve numero en lugar de string
+      var objLower = String(parsed.objetivo).toLowerCase().trim();
       parsed.objetivo = objetivoMap[objLower] || parsed.objetivo;
     }
 
@@ -3100,9 +3119,12 @@ INTERESES: Compras, Finanzas, Tecnolog\u00eda, Deporte, Familia, Viajes, Gaming,
         }
       }
       // Autofill Intereses
-      if (parsed.intereses && parsed.intereses.length > 0) {
+      // FIX RUNTIME v3.1: Array.isArray check antes de iterar. El LLM a veces
+      // devuelve intereses como string en lugar de array, lo que rompe .includes()
+      // semanticamente (busca substring en lugar de matchear elementos).
+      if (parsed.intereses && Array.isArray(parsed.intereses) && parsed.intereses.length > 0) {
         document.querySelectorAll('#optBody .chip').forEach(function(chip) {
-          if (parsed.intereses.includes(chip.textContent.trim())) chip.classList.add('active');
+          if (parsed.intereses.indexOf(chip.textContent.trim()) !== -1) chip.classList.add('active');
         });
       }
     }, fields.length * 80 + 100);
@@ -3135,11 +3157,12 @@ INTERESES: Compras, Finanzas, Tecnolog\u00eda, Deporte, Familia, Viajes, Gaming,
     });
 
     // Autofill KPIs
-    if (parsed.kpis && parsed.kpis.length > 0) {
+    // FIX RUNTIME v3.1: Array.isArray check antes de iterar
+    if (parsed.kpis && Array.isArray(parsed.kpis) && parsed.kpis.length > 0) {
       setTimeout(function() {
         document.querySelectorAll('#kpi-group .chip').forEach(function(chip) {
           chip.classList.remove('active');
-          if (parsed.kpis.includes(chip.dataset.kpi)) chip.classList.add('active');
+          if (parsed.kpis.indexOf(chip.dataset.kpi) !== -1) chip.classList.add('active');
         });
       }, fields.length * 80);
     }
