@@ -1595,6 +1595,29 @@ function sanitizePlanOutput(plan, brief) {
   // verifique antes de publicar.
   var numerosInventadosRegex = /(?:\+\s*de\s*\d+|mas\s+de\s+\d+|\d+\.\d+\s+clientes|\d+\+?\s+(?:clientes|ventas|anos|estrellas))/i;
 
+  // FIX v3.4 M2: Detectar descuentos inventados. Si el brief no menciona "% off",
+  // "descuento", "promocion", el LLM no deberia inventarlo. Lo limpiamos del copy.
+  // Regex amplio: caza "10%", "10% descuento", "10% off", "10% en tu primer mes", "10% menos"
+  var descuentoInventadoRegex = /\b\d+\s*%/i;
+
+  // FIX v3.4 M3: Superlativos vacios que no llevan dato concreto.
+  // "el mejor cafe" sin un premio o ranking que lo respalde es cliche.
+  var superlativosVacios = [
+    'el mejor ', 'la mejor ', 'los mejores ', 'las mejores ',
+    'el unico ', 'la unica ',
+    'el mas ', 'la mas ', 'lo mas ',
+    'increible', 'excepcional', 'extraordinario',
+    'imperdible', 'unico en su tipo'
+  ];
+
+  // Verificar si el brief menciona descuento/promocion - si lo menciona, NO es inventado
+  var briefTextoCombo = String((brief && brief.brief) || '') + ' ' +
+                        String((brief && brief.contexto) || '') + ' ' +
+                        String((brief && brief.propuestaValor) || '') + ' ' +
+                        String(window.KIVO_LAST_BRIEF || '');
+  briefTextoCombo = briefTextoCombo.toLowerCase();
+  var briefMencionaDescuento = /(?:descuento|promocion|promoci\u00f3n|oferta|off|rebaja|%|primer\s+mes\s+gratis|prueba\s+gratis|cuota|sin\s+interes)/i.test(briefTextoCombo);
+
   if (plan.copies && plan.copies.length) {
     plan.copies = plan.copies.map(function(c) {
       if (!c) return c;
@@ -1614,6 +1637,67 @@ function sanitizePlanOutput(plan, brief) {
       var origDesc = String(c.descripcion || '');
       if (numerosInventadosRegex.test(origTitular) || numerosInventadosRegex.test(origDesc)) {
         warnings.push('Numero sin verificar (cantidad de clientes/ventas/anos) - editar antes de publicar');
+      }
+
+      // FIX v3.4 M2: Limpiar descuento inventado del copy mismo (no solo avisar)
+      if (!briefMencionaDescuento) {
+        var hadDescTitular = descuentoInventadoRegex.test(origTitular);
+        var hadDescDesc = descuentoInventadoRegex.test(origDesc);
+        if (hadDescTitular || hadDescDesc) {
+          // Remover el descuento + frase contextual. Caza: "y ahorra 10% en tu primer mes",
+          // "con 15% off", "10% descuento", "10% menos", "10%" pelado
+          var descRemoveRegex = /\s*(?:y\s+(?:ahorra(?:te)?|ahorras|aprovecha|recibe|obten)\s+)?\d+\s*%\s*(?:de\s+)?(?:descuento|off|menos)?\s*(?:en\s+(?:tu\s+)?(?:primer(?:a)?\s+)?(?:mes|compra|pedido|suscripcion))?/gi;
+          var cleanTitular = origTitular.replace(descRemoveRegex, '').replace(/\s+/g, ' ').trim();
+          var cleanDesc = origDesc.replace(descRemoveRegex, '').replace(/\s+/g, ' ').trim();
+          // Limpieza de signos de exclamacion sueltos
+          cleanTitular = cleanTitular.replace(/\s+!/g, '!').replace(/!\s*$/, '').trim();
+          cleanDesc = cleanDesc.replace(/\s+!/g, '!').replace(/!\s*$/, '').trim();
+          // Solo reemplazar si el resultado no quedo vacio o roto
+          if (cleanTitular.length > 8 && cleanTitular !== origTitular) c.titular = cleanTitular;
+          if (cleanDesc.length > 10 && cleanDesc !== origDesc) c.descripcion = cleanDesc;
+          warnings.push('Descuento removido por KIVO (brief no lo menciono) - agrega tu promo real si corresponde');
+        }
+      }
+
+      // FIX v3.4 M3: Reemplazar superlativos vacios por variantes neutras
+      var titularLow = String(c.titular || '').toLowerCase();
+      var descLow = String(c.descripcion || '').toLowerCase();
+      var superlativoEnTitular = null;
+      var superlativoEnDesc = null;
+      for (var sv = 0; sv < superlativosVacios.length; sv++) {
+        if (titularLow.indexOf(superlativosVacios[sv]) !== -1 && !superlativoEnTitular) superlativoEnTitular = superlativosVacios[sv];
+        if (descLow.indexOf(superlativosVacios[sv]) !== -1 && !superlativoEnDesc) superlativoEnDesc = superlativosVacios[sv];
+      }
+      if (superlativoEnTitular) {
+        // Reemplazar "el mejor X" / "del mejor X" por "X" (sin el superlativo)
+        c.titular = String(c.titular)
+                     .replace(/\b(?:del|de\s+la|de\s+los|de\s+las)\s+mejor(?:es)?\s+/gi, '')
+                     .replace(/\b(?:el|la|los|las)\s+mejor(?:es)?\s+/gi, '')
+                     .replace(/\bel\s+unico\b/gi, '').replace(/\bla\s+unica\b/gi, '')
+                     .replace(/\bel\s+mas\b/gi, '').replace(/\bla\s+mas\b/gi, '').replace(/\blo\s+mas\b/gi, '')
+                     .replace(/\bincreible\b/gi, '').replace(/\bexcepcional\b/gi, '').replace(/\bextraordinario\b/gi, '')
+                     .replace(/\bimperdible\b/gi, '')
+                     // Limpieza: dobles espacios, espacios al inicio, articulos sueltos
+                     .replace(/\s+/g, ' ')
+                     .replace(/^\s*(?:del|de la|del los|de las)\s+/i, '')
+                     .trim();
+        // Capitalizar primera letra si quedo en minuscula
+        if (c.titular.length > 0) c.titular = c.titular.charAt(0).toUpperCase() + c.titular.slice(1);
+        if (c.titular.length < 8) c.titular = origTitular; // si quedo muy corto, restaurar
+        warnings.push('Superlativo vacio removido ("' + superlativoEnTitular.trim() + '") - usa datos concretos si tienes premios o certificaciones');
+      }
+      if (superlativoEnDesc) {
+        c.descripcion = String(c.descripcion)
+                          .replace(/\b(?:el|la|los|las)\s+mejor(?:es)?\s+/gi, '')
+                          .replace(/\bel\s+unico\b/gi, '').replace(/\bla\s+unica\b/gi, '')
+                          .replace(/\bel\s+mas\b/gi, '').replace(/\bla\s+mas\b/gi, '').replace(/\blo\s+mas\b/gi, '')
+                          .replace(/\bincreible\b/gi, '').replace(/\bexcepcional\b/gi, '').replace(/\bextraordinario\b/gi, '')
+                          .replace(/\bimperdible\b/gi, '')
+                          .replace(/\s+/g, ' ')
+                          .replace(/^\s*(?:del|de la|del los|de las)\s+/i, '')
+                          .trim();
+        if (c.descripcion.length > 0) c.descripcion = c.descripcion.charAt(0).toUpperCase() + c.descripcion.slice(1);
+        if (c.descripcion.length < 10) c.descripcion = origDesc;
       }
 
       if (warnings.length > 0) {
@@ -1792,6 +1876,84 @@ function sanitizePlanOutput(plan, brief) {
         return c;
       });
     }
+  }
+
+  // ---- 6) FIX v3.4 M4: Normalizar voseo argentino a tuteo chileno ----
+  // El LLM mezcla registros. Si el pais es Chile/Colombia/Peru/Mexico (no Argentina/Uruguay),
+  // normalizamos verbos en voseo: suscribite -> suscribete, ahorra -> ahorra, contactanos -> contactanos.
+  // Es defensa profunda para que los copies suenen naturales al mercado local.
+  var paisLower = String((brief && brief.pais) || 'Chile').toLowerCase();
+  var paisesTuteo = ['chile', 'colombia', 'peru', 'mexico', 'ecuador', 'bolivia', 'venezuela', 'panama', 'cuba'];
+  var aplicarNormalizacion = paisesTuteo.indexOf(paisLower) !== -1;
+
+  if (aplicarNormalizacion && plan.copies && plan.copies.length) {
+    // Pares de reemplazo: voseo (argentino) -> tuteo (chileno/neutro)
+    // Usamos word boundaries para no romper palabras que contengan estos fragmentos
+    var voseoMap = [
+      // Imperativos terminados en -a/-e/-i acentuados (voseo) -> sin acento (tuteo)
+      [/\bsuscribite\b/gi, 'suscribete'],
+      [/\bsuscrib\u00edte\b/gi, 'suscr\u00edbete'],
+      [/\bahorr\u00e1\b/gi, 'ahorra'],
+      [/\bdisfrut\u00e1\b/gi, 'disfruta'],
+      [/\bcontact\u00e1\b/gi, 'contacta'],
+      [/\bcontactanos\b/gi, 'contactanos'],
+      [/\bcontact\u00e1nos\b/gi, 'cont\u00e1ctanos'],
+      [/\bllevate\b/gi, 'llevate'],
+      [/\bllev\u00e1\b/gi, 'lleva'],
+      [/\bllev\u00e1te\b/gi, 'll\u00e9vate'],
+      [/\bcomprate\b/gi, 'c\u00f3mprate'],
+      [/\bcompr\u00e1\b/gi, 'compra'],
+      [/\bcompr\u00e1te\b/gi, 'c\u00f3mprate'],
+      [/\bproba\b/gi, 'prueba'],
+      [/\bprob\u00e1\b/gi, 'prueba'],
+      [/\bprobalo\b/gi, 'pru\u00e9balo'],
+      [/\bprob\u00e1lo\b/gi, 'pru\u00e9balo'],
+      [/\bped\u00ed\b/gi, 'pide'],
+      [/\bped\u00edlo\b/gi, 'p\u00eddelo'],
+      [/\bconsegu\u00ed\b/gi, 'consigue'],
+      [/\benvi\u00e1nos\b/gi, 'env\u00edanos'],
+      [/\bescribinos\b/gi, 'escr\u00edbenos'],
+      [/\bescrib\u00ed\b/gi, 'escribe'],
+      [/\bescrib\u00ednos\b/gi, 'escr\u00edbenos'],
+      [/\bregistrate\b/gi, 'reg\u00edstrate'],
+      [/\bregistr\u00e1te\b/gi, 'reg\u00edstrate'],
+      [/\banot\u00e1\b/gi, 'an\u00f3tate'],
+      [/\banotate\b/gi, 'an\u00f3tate'],
+      [/\bmir\u00e1\b/gi, 'mira'],
+      [/\bve\u00e9\b/gi, 've'],
+      [/\bdescub\u00ed\b/gi, 'descubre'],
+      [/\bdescubrilo\b/gi, 'descubrelo'],
+      [/\bdescubr\u00edlo\b/gi, 'descubrelo'],
+      [/\bsumate\b/gi, 'sumate'],
+      [/\bsum\u00e1te\b/gi, 's\u00famate'],
+      [/\baprovech\u00e1\b/gi, 'aprovecha'],
+      [/\bquer\u00e9s\b/gi, 'quieres'],
+      [/\bpod\u00e9s\b/gi, 'puedes'],
+      [/\bten\u00e9s\b/gi, 'tienes'],
+      [/\bsab\u00e9s\b/gi, 'sabes'],
+      // "vos" -> "tu"
+      [/\bvos\b/gi, 't\u00fa'],
+      [/\bpara vos\b/gi, 'para ti']
+    ];
+
+    plan.copies = plan.copies.map(function(c) {
+      if (!c) return c;
+      var origTit = String(c.titular || '');
+      var origDes = String(c.descripcion || '');
+      var origCta = String(c.cta || '');
+      var newTit = origTit;
+      var newDes = origDes;
+      var newCta = origCta;
+      for (var vi = 0; vi < voseoMap.length; vi++) {
+        newTit = newTit.replace(voseoMap[vi][0], voseoMap[vi][1]);
+        newDes = newDes.replace(voseoMap[vi][0], voseoMap[vi][1]);
+        newCta = newCta.replace(voseoMap[vi][0], voseoMap[vi][1]);
+      }
+      c.titular = newTit;
+      c.descripcion = newDes;
+      c.cta = newCta;
+      return c;
+    });
   }
 
   return plan;
@@ -2822,13 +2984,22 @@ function sanitizeOportunidad(oportunidad, marca, categoria) {
   var frasesVacias = [
     'atencion personalizada', 'atencion al cliente',
     'experiencia personalizada', 'experiencias personalizadas',
-    'experiencia de compra', 'experiencia unica',
+    'experiencia de compra', 'experiencia unica', 'experiencia premium',
     'lealtad', 'fidelizacion', 'fidelidad',
-    'compromiso con el cliente',
+    'compromiso con el cliente', 'compromiso',
     'calidad del servicio', 'calidad de servicio',
     'satisfaccion del cliente',
     'mejorar atencion', 'mejor atencion',
-    'trato personalizado'
+    'trato personalizado',
+    // FIX v3.4 M1: variantes adicionales que el LLM devuelve disfrazadas
+    'asesoramiento especializado', 'asesoramiento personalizado',
+    'asesoria especializada', 'asesoria personalizada',
+    'servicio especializado', 'servicio personalizado', 'servicio premium',
+    'profesionalismo', 'profesionalidad',
+    'servicio de excelencia', 'excelencia en el servicio',
+    'atencion de calidad', 'servicio de calidad',
+    'innovacion', 'innovador',
+    'diferenciacion'
   ];
   var esVacia = false;
   for (var f = 0; f < frasesVacias.length; f++) {
