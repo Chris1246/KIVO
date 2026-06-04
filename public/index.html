@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -1507,6 +1508,77 @@ window.addEventListener('unhandledrejection', function(event) {
 function sanitizePlanOutput(plan, brief) {
   if (!plan) return plan;
 
+  // ---- 0) FIX v3.4 Accion A: Calculo defensivo de impresiones y alcance ----
+  // El LLM a veces devuelve impresiones=0 o alcance=0 aunque haya presupuesto.
+  // Eso rompe la UI hero ("0K personas alcanzadas") y destruye la credibilidad.
+  // Calculamos desde CPM real, frecuencia tipica, y presupuesto.
+  if (plan.plataformas && plan.plataformas.length) {
+    plan.plataformas = plan.plataformas.map(function(p) {
+      if (!p) return p;
+      var presupP = parseFloat(p.presupuesto) || 0;
+      var cpm = parseFloat(p.cpm_estimado) || 0;
+      var imp = parseFloat(p.impresiones) || 0;
+      var freq = parseFloat(p.frecuencia) || 0;
+      var alc = parseFloat(p.alcance) || 0;
+
+      // Si no hay CPM, usar default segun plataforma (CPMs LATAM Chile 2026)
+      if (!cpm || cpm <= 0) {
+        var nombre = String(p.nombre || '').toLowerCase();
+        if (nombre.indexOf('meta') !== -1 || nombre.indexOf('whatsapp') !== -1 || nombre.indexOf('facebook') !== -1 || nombre.indexOf('instagram') !== -1) cpm = 2.2;
+        else if (nombre.indexOf('youtube') !== -1) cpm = 5.0;
+        else if (nombre.indexOf('tiktok') !== -1) cpm = 4.0;
+        else if (nombre.indexOf('google') !== -1 || nombre.indexOf('search') !== -1 || nombre.indexOf('pmax') !== -1) cpm = 1.8;
+        else if (nombre.indexOf('linkedin') !== -1) cpm = 7.5;
+        else if (nombre.indexOf('spotify') !== -1) cpm = 3.5;
+        else cpm = 2.5;
+        p.cpm_estimado = cpm;
+      }
+
+      // Recalcular impresiones si faltan o son 0
+      if (imp <= 0 && presupP > 0 && cpm > 0) {
+        imp = Math.round((presupP / cpm) * 1000);
+        p.impresiones = imp;
+      }
+
+      // Frecuencia default si falta: 3x es estandar para conversion
+      if (!freq || freq <= 0) {
+        freq = 3.0;
+        p.frecuencia = freq;
+      }
+
+      // Recalcular alcance si falta o es 0
+      if (alc <= 0 && imp > 0 && freq > 0) {
+        alc = Math.round(imp / freq);
+        p.alcance = alc;
+      }
+
+      return p;
+    });
+
+    // Recalcular totales si faltan o son 0
+    if (!plan.totales) plan.totales = {};
+    var sumImp = 0, sumAlc = 0, sumFreq = 0, sumCpm = 0, countP = 0;
+    plan.plataformas.forEach(function(p) {
+      sumImp += parseFloat(p.impresiones) || 0;
+      sumAlc += parseFloat(p.alcance) || 0;
+      sumFreq += parseFloat(p.frecuencia) || 0;
+      sumCpm += parseFloat(p.cpm_estimado) || 0;
+      countP++;
+    });
+    if (!plan.totales.impresiones_totales || plan.totales.impresiones_totales <= 0) {
+      plan.totales.impresiones_totales = sumImp;
+    }
+    if (!plan.totales.alcance_total || plan.totales.alcance_total <= 0) {
+      plan.totales.alcance_total = sumAlc;
+    }
+    if (!plan.totales.frecuencia_promedio || plan.totales.frecuencia_promedio <= 0) {
+      plan.totales.frecuencia_promedio = countP > 0 ? (sumFreq / countP) : 3.0;
+    }
+    if (!plan.totales.cpm_promedio || plan.totales.cpm_promedio <= 0) {
+      plan.totales.cpm_promedio = countP > 0 ? (sumCpm / countP) : 2.5;
+    }
+  }
+
   // ---- 1) Copies: detectar cliches y numeros inventados ----
   // Patrones que indican copy mediocre o numero inventado.
   var clichesCopy = [
@@ -1608,9 +1680,9 @@ function sanitizePlanOutput(plan, brief) {
   }
 
   // ---- 3) Calibrar y formatear umbral_exito ----
-  // FIX v3.3 - Acción 2: ANTES solo recalibraba si era CPL bajo. AHORA siempre
+  // FIX v3.3 - Accion 2: ANTES solo recalibraba si era CPL bajo. AHORA siempre
   // formatea con unidad clara aunque el LLM devuelva solo "10" sin contexto.
-  // El usuario no debe leer "UMBRAL: 10" y preguntarse 10 qué.
+  // El usuario no debe leer "UMBRAL: 10" y preguntarse 10 que.
   if (plan.criterios_exito.umbral_exito !== undefined && plan.criterios_exito.umbral_exito !== null && plan.criterios_exito.metrica_principal) {
     var umbralOrig = plan.criterios_exito.umbral_exito;
     var umbral = String(umbralOrig).toLowerCase();
@@ -1673,7 +1745,7 @@ function sanitizePlanOutput(plan, brief) {
   }
 
   // ---- 4) Defensa: proyecciones que confunden leads con ventas ----
-  // FIX v3.3 - Acción 4: si la metrica es CPL/leads pero la proyeccion habla de
+  // FIX v3.3 - Accion 4: si la metrica es CPL/leads pero la proyeccion habla de
   // "ventas", KIVO debe aclarar que son leads/conversaciones, no ventas cerradas.
   if (plan.kpi_proyecciones && plan.kpi_proyecciones.length > 0) {
     plan.kpi_proyecciones = plan.kpi_proyecciones.map(function(kp) {
@@ -1694,10 +1766,10 @@ function sanitizePlanOutput(plan, brief) {
     });
   }
 
-  // ---- 5) Inserción geográfica en copies ----
-  // FIX v3.3 - Acción 3: si el brief tiene una zona geográfica clara y el copy
+  // ---- 5) Insercion geografica en copies ----
+  // FIX v3.3 - Accion 3: si el brief tiene una zona geografica clara y el copy
   // no la menciona, agregar nota recomendando incluirla. NO modificamos el copy
-  // automáticamente (sería riesgoso reescribir), pero alertamos al freelancer.
+  // automaticamente (seria riesgoso reescribir), pero alertamos al freelancer.
   if (plan.copies && plan.copies.length && brief) {
     var zonaGeo = extraerZonaGeografica((brief.brief || '') + ' ' + (window.KIVO_LAST_BRIEF || ''));
     if (zonaGeo) {
@@ -1725,9 +1797,9 @@ function sanitizePlanOutput(plan, brief) {
   return plan;
 }
 
-// FIX v3.3 - Acción 3: extractor de zona geográfica del brief.
+// FIX v3.3 - Accion 3: extractor de zona geografica del brief.
 // Detecta comunas chilenas y otras zonas comunes para defensa profunda.
-// Normaliza acentos para que "Maipú" coincida con "maipu" en la lista.
+// Normaliza acentos para que "Maipu" coincida con "maipu" en la lista.
 function extraerZonaGeografica(text) {
   if (!text) return null;
   // Normalizar: lowercase + remover acentos (NFD -> filtrar combining marks)
@@ -1978,6 +2050,10 @@ function buildBriefScore(brief, parsed) {
       pvScore = 1;
       var preguntas = preguntasGuiadasDiferencial(parsed && parsed.categoria);
       tips.push('Tu propuesta de valor es generica. Pregunta clave: ' + preguntas[0]);
+    } else if (pvQuality === 'objective_disguised') {
+      // FIX v3.4 Accion B: el usuario escribio un objetivo, no un diferencial
+      pvScore = 0;
+      tips.push('Tu propuesta de valor parece un OBJETIVO ("quiero...", "necesito..."), no un diferencial. Un diferencial responde: que hace UNICO a tu producto vs la competencia. Ejemplo: en vez de "quiero llevar trafico a mi web", escribe "marcas importadas que no encontras en Falabella" o "envio en 24 horas a todo Santiago".');
     } else {
       pvScore = 0;
       tips.push('Describe que hace diferente a tu producto');
@@ -2029,6 +2105,28 @@ function assessPropuestaValor(pv) {
   var text = pv.trim().toLowerCase();
   if (text.length < 15) return 'empty';
 
+  // FIX v3.4 Accion B: Detectar "objetivo disfrazado de diferencial".
+  // Si el usuario escribe "quiero/necesito/busco X" eso es un OBJETIVO, no un diferencial.
+  // El LLM toma esto literal y rompe el plan (caso real: "solo quiero llevar trafico a mi pagina web"
+  // hizo que el modelo confundiera a la zapateria con una agencia que vende trafico).
+  var objectivePatterns = [
+    /^solo quiero\b/, /^solo necesito\b/, /^solo busco\b/,
+    /^quiero\b/, /^necesito\b/, /^busco\b/,
+    /^mi objetivo es\b/, /^el objetivo es\b/,
+    /^voy a\b/, /^pretendo\b/, /^espero\b/,
+    /^me gustaria\b/, /^queremos\b/, /^necesitamos\b/,
+    /^buscamos\b/, /^pretendemos\b/,
+    /^nuestro objetivo\b/, /^nuestra meta\b/
+  ];
+  for (var op = 0; op < objectivePatterns.length; op++) {
+    if (objectivePatterns[op].test(text)) return 'objective_disguised';
+  }
+  // Tambien detectar si solo habla de "llegar/aumentar/lograr" sin describir el producto
+  var actionVerbs = /^(llegar a|aumentar|lograr|conseguir|generar|alcanzar|tener|atraer)\b/;
+  if (actionVerbs.test(text) && !/\b(producto|servicio|marca|cliente)\b/.test(text)) {
+    return 'objective_disguised';
+  }
+
   // ANTI-PATTERNS: cliches de marketing que NO son diferenciadores reales.
   // Si la propuesta consiste principalmente en estos, es descriptive aunque sea larga.
   var marketingCliches = [
@@ -2066,6 +2164,7 @@ function assessPropuestaValor(pv) {
     'fabricacion propia', 'produccion propia', 'taller propio',
     'importacion directa', 'sin intermediarios',
     'mayorista', 'al por mayor',
+    'importad', 'no disponible en', 'no encontras en',
     '%', 'descuento de', 'cuotas sin interes',
     'organico', 'libre de', '100% '
   ];
@@ -2670,9 +2769,36 @@ function buildCompIntelHTML(competencia, pais, categoria) {
     ? '<div style="font-size:10px;background:rgba(48,209,88,0.07);border:1px solid rgba(48,209,88,0.2);border-radius:7px;padding:7px 10px;margin-bottom:10px;color:var(--green);line-height:1.5">Competidores ingresados por ti. KIVO analiza su estrategia digital basada en patrones de mercado conocidos.</div>'
     : '<div style="font-size:10px;background:rgba(91,127,255,0.07);border:1px solid rgba(91,127,255,0.18);border-radius:7px;padding:7px 10px;margin-bottom:10px;color:var(--text-secondary);line-height:1.5">Tu conoces mejor a tu competencia directa. Si las empresas abajo no son las correctas, vuelve al formulario, actualiza el campo Competencia con los nombres reales y regenera el plan.</div>';
 
+  // FIX v3.4 Accion D: Inyectar banner de mismatch DENTRO del bloque de Inteligencia
+  // Competitiva. Asi el usuario lo ve junto a las marcas (Falabella/Paris/Ripley)
+  // y no perdido arriba. Esto resuelve el bug donde el banner no se mostraba o se mostraba
+  // pero el usuario no lo veia despues de scrollear.
+  var mismatchInline = '';
+  var nivelComp = window.KIVO_NIVEL_COMPETITIVO || detectarNivelCompetitivo(window.KIVO_LAST_BRIEF || '', '', '', '');
+  if (nivelComp && typeof detectarMismatchCompetencia === 'function') {
+    var mm = detectarMismatchCompetencia(nivelComp, competencia);
+    if (mm) {
+      mismatchInline =
+        '<div style="background:rgba(255,159,10,0.08);border:1px solid rgba(255,159,10,0.35);border-radius:10px;padding:14px 16px;margin-bottom:14px">' +
+          '<div style="font-size:12px;font-weight:700;color:var(--orange);margin-bottom:8px;display:flex;align-items:center;gap:8px">' +
+            '<span>\u26A0</span><span>Tu competencia ingresada NO es tu competencia real</span>' +
+          '</div>' +
+          '<div style="font-size:11px;color:var(--text-secondary);line-height:1.6;margin-bottom:6px">' +
+            mm.mensaje +
+          '</div>' +
+          '<div style="font-size:11px;color:var(--text-secondary);line-height:1.6">' +
+            '<strong>Que hacer:</strong> identifica 3-5 negocios de tu mismo tamano y zona. ' +
+            'Camina o googlea por tu barrio. Si analizas a Falabella como competencia real, ' +
+            'el plan te va a recomendar pelear donde no podes ganar.' +
+          '</div>' +
+        '</div>';
+    }
+  }
+
   return '<div class="comp-intel">' +
     '<div class="comp-intel-title">Inteligencia competitiva</div>' +
     '<div class="comp-intel-sub">Ver anuncios activos de tu competencia en ' + pais + ' \u00b7 Fuentes p\u00fablicas oficiales</div>' +
+    mismatchInline +
     sourceNote +
     '<div class="comp-brands-list">' + brandRows + '</div>' +
     '<div class="comp-analysis" id="compAnalysisContainer">' +
@@ -2680,6 +2806,86 @@ function buildCompIntelHTML(competencia, pais, categoria) {
     '</div>' +
     '<div class="comp-disclaimer">Los links abren Meta Ad Library, Google Ads Transparency y TikTok Ad Library - bases de datos p\u00fablicas y oficiales. El an\u00e1lisis IA es una estimaci\u00f3n basada en patrones de mercado conocidos, no en datos de performance reales.</div>' +
   '</div>';
+}
+
+// FIX v3.4 Accion C: Reemplaza oportunidades competitivas genericas/vacias por
+// alternativas accionables segun el nivel competitivo y la categoria.
+// El LLM tiende a devolver "atencion personalizada", "experiencia personalizada",
+// "lealtad", "calidad del servicio" - todas frases en las que las marcas grandes
+// invierten millones, por lo que NO son oportunidades reales para un negocio chico.
+function sanitizeOportunidad(oportunidad, marca, categoria) {
+  if (!oportunidad) return oportunidad;
+  var orig = String(oportunidad);
+  var t = orig.toLowerCase();
+
+  // Lista de frases vacias que indican oportunidad mediocre
+  var frasesVacias = [
+    'atencion personalizada', 'atencion al cliente',
+    'experiencia personalizada', 'experiencias personalizadas',
+    'experiencia de compra', 'experiencia unica',
+    'lealtad', 'fidelizacion', 'fidelidad',
+    'compromiso con el cliente',
+    'calidad del servicio', 'calidad de servicio',
+    'satisfaccion del cliente',
+    'mejorar atencion', 'mejor atencion',
+    'trato personalizado'
+  ];
+  var esVacia = false;
+  for (var f = 0; f < frasesVacias.length; f++) {
+    if (t.indexOf(frasesVacias[f]) !== -1) { esVacia = true; break; }
+  }
+
+  if (!esVacia) return orig;
+
+  // Es vacia. Reemplazar por una alternativa concreta segun nivel competitivo + categoria.
+  var nivelComp = window.KIVO_NIVEL_COMPETITIVO || 'desconocido';
+  var cat = String(categoria || '').toLowerCase();
+
+  // Pool de alternativas accionables por categoria
+  var alternativasRetail = [
+    'Prueba inmediata del producto sin esperar despacho',
+    'Asesoramiento humano de un experto, no chatbot',
+    'WhatsApp directo con quien atiende, no call center',
+    'Curaduria experta vs catalogo masivo sin filtro',
+    'Stock real en tienda, sin "sin stock al pagar"'
+  ];
+  var alternativasServicios = [
+    'Respuesta en horas, no en dias laborables',
+    'Trabajo cara a cara con el dueno, no operadores',
+    'Cobertura barrial real, sin viatico extra',
+    'Garantia post-servicio explicita y por escrito'
+  ];
+  var alternativasSalud = [
+    'Cita en 48 horas vs lista de espera de cadenas',
+    'Mismo profesional siempre, sin rotacion',
+    'Cobertura de seguros que las cadenas grandes no cubren'
+  ];
+  var alternativasEducacion = [
+    'Grupos chicos vs aulas masivas',
+    'Profesor accesible por WhatsApp fuera de clase',
+    'Resultados medibles en plazo concreto'
+  ];
+  var alternativasInmobiliaria = [
+    'Visitas con el dueno, no con vendedor a comision',
+    'Conocimiento profundo del barrio',
+    'Financiamiento directo sin intermediarios bancarios'
+  ];
+
+  var pool;
+  if (cat.indexOf('retail') !== -1 || cat.indexOf('commerce') !== -1) pool = alternativasRetail;
+  else if (cat.indexOf('servicio') !== -1 || cat.indexOf('utilities') !== -1) pool = alternativasServicios;
+  else if (cat.indexOf('salud') !== -1 || cat.indexOf('farma') !== -1) pool = alternativasSalud;
+  else if (cat.indexOf('educacion') !== -1) pool = alternativasEducacion;
+  else if (cat.indexOf('inmobiliario') !== -1) pool = alternativasInmobiliaria;
+  else pool = alternativasRetail;
+
+  // Elegir una alternativa pseudo-aleatoria pero determinista por marca
+  // (asi la misma marca siempre recibe la misma oportunidad)
+  var seed = 0;
+  var marcaStr = String(marca || 'x');
+  for (var s = 0; s < marcaStr.length; s++) seed = (seed + marcaStr.charCodeAt(s)) % 1000;
+  var idx = seed % pool.length;
+  return pool[idx];
 }
 
 async function analyzeCompetitors(competencia, pais, categoria, objetivo) {
@@ -2714,6 +2920,11 @@ async function analyzeCompetitors(competencia, pais, categoria, objetivo) {
         '<tbody>';
 
       parsed.analisis.forEach(function(a) {
+        // FIX v3.4 Accion C: defensa profunda en oportunidades.
+        // El LLM desobedece la regla del prompt y devuelve "atencion personalizada",
+        // "lealtad", "experiencia personalizada" - frases vacias que el cliente
+        // de Cristian leeria y diria "esto es generico". Reemplazamos por accion concreta.
+        a.oportunidad = sanitizeOportunidad(a.oportunidad, a.marca, categoria);
         tableHTML +=
           '<tr>' +
             '<td class="comp-td-brand">' + a.marca + '</td>' +
@@ -3496,12 +3707,12 @@ async function generarPlan() {
   const fecha = gv('fechaInicio', '');
   const propuestaValor = document.getElementById('propuestaValor') ? document.getElementById('propuestaValor').value.trim() : '';
 
-  // FIX v3.3 - Acción 1: Re-evaluar el banner de mismatch competencia con los
+  // FIX v3.3 - Accion 1: Re-evaluar el banner de mismatch competencia con los
   // valores finales del UI (el usuario pudo haber editado el campo competencia
-  // después del análisis automático del brief). Esto resuelve el bug donde el
-  // banner se evaluaba con parsed.competencia vacío y nunca se volvía a mostrar.
+  // despues del analisis automatico del brief). Esto resuelve el bug donde el
+  // banner se evaluaba con parsed.competencia vacio y nunca se volvia a mostrar.
   if (typeof renderCompetitionLevelWarning === 'function') {
-    // Reconstruimos un parsed sintético con los valores actuales del UI
+    // Reconstruimos un parsed sintetico con los valores actuales del UI
     var parsedActual = {
       competencia: competencia,
       propuesta_valor: propuestaValor,
@@ -3510,6 +3721,35 @@ async function generarPlan() {
     };
     var briefActual = (window.KIVO_LAST_BRIEF || '') + ' ' + (contexto || '') + ' ' + (propuestaValor || '');
     renderCompetitionLevelWarning(briefActual, parsedActual);
+  }
+
+  // FIX v3.4 Accion B: validar que propuesta_valor sea diferencial, no objetivo.
+  // Si el usuario escribio "quiero/necesito X", el LLM lo va a tomar literal y
+  // a generar copies absurdos (caso real: zapateria que termino siendo "agencia de trafico").
+  // Mostramos un confirm para que el usuario decida: editar o continuar bajo su riesgo.
+  if (propuestaValor && typeof assessPropuestaValor === 'function') {
+    var pvCheck = assessPropuestaValor(propuestaValor);
+    if (pvCheck === 'objective_disguised' && !window.KIVO_PV_OVERRIDE) {
+      var msg = 'Tu propuesta de valor parece un OBJETIVO ("quiero...", "necesito..."), no un DIFERENCIAL.\n\n' +
+                'Lo escribiste: "' + propuestaValor + '"\n\n' +
+                'Un diferencial responde: que hace UNICO a tu producto vs la competencia.\n' +
+                'Ejemplos correctos:\n' +
+                '  - "Marcas importadas que no encontras en Falabella"\n' +
+                '  - "Envio en 24 horas a todo Santiago"\n' +
+                '  - "Unica tienda de Maipu con asesoramiento para runners"\n\n' +
+                'Si continuas con el texto actual, el plan puede salir confuso.\n\n' +
+                'OK = editar propuesta de valor\n' +
+                'Cancelar = continuar de todos modos';
+      var quiereEditar = confirm(msg);
+      if (quiereEditar) {
+        var pvEl = document.getElementById('propuestaValor');
+        if (pvEl) { pvEl.focus(); pvEl.select(); }
+        return;
+      } else {
+        // Usuario decide continuar a su riesgo - guardamos override para esta sesion
+        window.KIVO_PV_OVERRIDE = true;
+      }
+    }
   }
 
   // FIX (2026-05 v2): Capturar capas extra de targeting fino
