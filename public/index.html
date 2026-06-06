@@ -1507,6 +1507,26 @@ window.addEventListener('unhandledrejection', function(event) {
 //  3. Calibrar umbral_exito CPL para realidades de pixel frio en Chile
 function sanitizePlanOutput(plan, brief) {
   if (!plan) return plan;
+  // FIX v3.4 polish: defensa profunda contra tipos hostiles del LLM.
+  // Si el LLM devuelve algo que no es objeto (string, number, boolean, array),
+  // devolvemos un plan minimo vacio para que el renderer no crashee.
+  if (typeof plan !== 'object' || Array.isArray(plan)) {
+    return { plataformas: [], copies: [], criterios_exito: { reglas_reasignacion: [] }, totales: {}, advertencias: ['Plan invalido recibido del modelo - intenta regenerar'] };
+  }
+  // Coerciones de campos clave a sus tipos correctos
+  if (plan.plataformas && !Array.isArray(plan.plataformas)) plan.plataformas = [];
+  if (plan.copies && !Array.isArray(plan.copies)) plan.copies = [];
+  if (plan.kpi_proyecciones && !Array.isArray(plan.kpi_proyecciones)) plan.kpi_proyecciones = [];
+  if (plan.totales && typeof plan.totales !== 'object') plan.totales = {};
+  if (plan.criterios_exito && typeof plan.criterios_exito !== 'object') plan.criterios_exito = {};
+  // Filtrar plataformas nulas
+  if (Array.isArray(plan.plataformas)) {
+    plan.plataformas = plan.plataformas.filter(function(p) { return p && typeof p === 'object'; });
+  }
+  // Filtrar copies nulos
+  if (Array.isArray(plan.copies)) {
+    plan.copies = plan.copies.filter(function(c) { return c && typeof c === 'object' && !Array.isArray(c); });
+  }
 
   // ---- 0) FIX v3.4 Accion A: Calculo defensivo de impresiones y alcance ----
   // El LLM a veces devuelve impresiones=0 o alcance=0 aunque haya presupuesto.
@@ -1607,7 +1627,9 @@ function sanitizePlanOutput(plan, brief) {
     'el unico ', 'la unica ',
     'el mas ', 'la mas ', 'lo mas ',
     'increible', 'excepcional', 'extraordinario',
-    'imperdible', 'unico en su tipo'
+    'imperdible', 'unico en su tipo',
+    // FIX v3.4 polish: agregar "perfecto" - es subjetivo vacio sin sustento
+    'perfecto', 'perfecta', 'ideal', 'fenomenal'
   ];
 
   // Verificar si el brief menciona descuento/promocion - si lo menciona, NO es inventado
@@ -1616,7 +1638,9 @@ function sanitizePlanOutput(plan, brief) {
                         String((brief && brief.propuestaValor) || '') + ' ' +
                         String(window.KIVO_LAST_BRIEF || '');
   briefTextoCombo = briefTextoCombo.toLowerCase();
-  var briefMencionaDescuento = /(?:descuento|promocion|promoci\u00f3n|oferta|off|rebaja|%|primer\s+mes\s+gratis|prueba\s+gratis|cuota|sin\s+interes)/i.test(briefTextoCombo);
+  // FIX v3.4 polish: word boundaries para no cazar "off" dentro de "coffee" o "offline".
+  // Tambien escapamos "promocion" para que no cace dentro de palabras compuestas.
+  var briefMencionaDescuento = /(?:\bdescuento\b|\bpromocion(?:es)?\b|\bpromoci\u00f3n(?:es)?\b|\boferta(?:s)?\b|\d+\s*%\s+(?:off|menos|descuento)|\d+%|\brebaja(?:s)?\b|primer\s+mes\s+gratis|prueba\s+gratis|\bcuota(?:s)?\b|sin\s+interes|\$\s*\d+\s*off\b)/i.test(briefTextoCombo);
 
   if (plan.copies && plan.copies.length) {
     plan.copies = plan.copies.map(function(c) {
@@ -1670,29 +1694,46 @@ function sanitizePlanOutput(plan, brief) {
       }
       if (superlativoEnTitular) {
         // Reemplazar "el mejor X" / "del mejor X" por "X" (sin el superlativo)
-        c.titular = String(c.titular)
+        var cleanT = String(c.titular)
                      .replace(/\b(?:del|de\s+la|de\s+los|de\s+las)\s+mejor(?:es)?\s+/gi, '')
                      .replace(/\b(?:el|la|los|las)\s+mejor(?:es)?\s+/gi, '')
                      .replace(/\bel\s+unico\b/gi, '').replace(/\bla\s+unica\b/gi, '')
                      .replace(/\bel\s+mas\b/gi, '').replace(/\bla\s+mas\b/gi, '').replace(/\blo\s+mas\b/gi, '')
                      .replace(/\bincreible\b/gi, '').replace(/\bexcepcional\b/gi, '').replace(/\bextraordinario\b/gi, '')
                      .replace(/\bimperdible\b/gi, '')
+                     // FIX v3.4 polish: tambien quitar "perfecto/perfecta/ideal/fenomenal"
+                     .replace(/\bperfecto\b/gi, '').replace(/\bperfecta\b/gi, '')
+                     .replace(/\bideal\b/gi, '').replace(/\bfenomenal\b/gi, '')
                      // Limpieza: dobles espacios, espacios al inicio, articulos sueltos
                      .replace(/\s+/g, ' ')
                      .replace(/^\s*(?:del|de la|del los|de las)\s+/i, '')
                      .trim();
         // Capitalizar primera letra si quedo en minuscula
-        if (c.titular.length > 0) c.titular = c.titular.charAt(0).toUpperCase() + c.titular.slice(1);
-        if (c.titular.length < 8) c.titular = origTitular; // si quedo muy corto, restaurar
-        warnings.push('Superlativo vacio removido ("' + superlativoEnTitular.trim() + '") - usa datos concretos si tienes premios o certificaciones');
+        if (cleanT.length > 0) cleanT = cleanT.charAt(0).toUpperCase() + cleanT.slice(1);
+        // FIX v3.4 polish: si quedo muy corto, agregar contexto del brief para tener algo usable
+        if (cleanT.length < 8 && cleanT.length > 0) {
+          // Tomamos una palabra clave del brief/contexto si la hay
+          var contextHint = '';
+          if (brief && brief.propuestaValor) contextHint = String(brief.propuestaValor).split(/\s+/).slice(0,4).join(' ');
+          if (!contextHint && brief && brief.contexto) contextHint = String(brief.contexto).split(/\s+/).slice(0,4).join(' ');
+          c.titular = cleanT + (contextHint ? ' - ' + contextHint : '');
+        } else if (cleanT.length === 0) {
+          c.titular = origTitular; // si quedo vacio total, restaurar
+        } else {
+          c.titular = cleanT;
+        }
+        warnings.push('Superlativo vacio removido ("' + superlativoEnTitular.trim() + '") - revisa el titular antes de publicar');
       }
       if (superlativoEnDesc) {
         c.descripcion = String(c.descripcion)
+                          .replace(/\b(?:del|de\s+la|de\s+los|de\s+las)\s+mejor(?:es)?\s+/gi, '')
                           .replace(/\b(?:el|la|los|las)\s+mejor(?:es)?\s+/gi, '')
                           .replace(/\bel\s+unico\b/gi, '').replace(/\bla\s+unica\b/gi, '')
                           .replace(/\bel\s+mas\b/gi, '').replace(/\bla\s+mas\b/gi, '').replace(/\blo\s+mas\b/gi, '')
                           .replace(/\bincreible\b/gi, '').replace(/\bexcepcional\b/gi, '').replace(/\bextraordinario\b/gi, '')
                           .replace(/\bimperdible\b/gi, '')
+                          .replace(/\bperfecto\b/gi, '').replace(/\bperfecta\b/gi, '')
+                          .replace(/\bideal\b/gi, '').replace(/\bfenomenal\b/gi, '')
                           .replace(/\s+/g, ' ')
                           .replace(/^\s*(?:del|de la|del los|de las)\s+/i, '')
                           .trim();
@@ -1710,6 +1751,10 @@ function sanitizePlanOutput(plan, brief) {
   // ---- 2) Forzar minimo 3 reglas de reasignacion ----
   if (!plan.criterios_exito) plan.criterios_exito = {};
   if (!plan.criterios_exito.reglas_reasignacion) plan.criterios_exito.reglas_reasignacion = [];
+  // FIX v3.4 polish: defensa si LLM devuelve reglas_reasignacion como string u objeto
+  if (!Array.isArray(plan.criterios_exito.reglas_reasignacion)) {
+    plan.criterios_exito.reglas_reasignacion = [];
+  }
 
   // Filtrar reglas vacias o incompletas
   plan.criterios_exito.reglas_reasignacion = plan.criterios_exito.reglas_reasignacion.filter(function(r) {
@@ -1855,7 +1900,14 @@ function sanitizePlanOutput(plan, brief) {
   // no la menciona, agregar nota recomendando incluirla. NO modificamos el copy
   // automaticamente (seria riesgoso reescribir), pero alertamos al freelancer.
   if (plan.copies && plan.copies.length && brief) {
-    var zonaGeo = extraerZonaGeografica((brief.brief || '') + ' ' + (window.KIVO_LAST_BRIEF || ''));
+    // FIX v3.4 polish: incluir contexto y propuestaValor para no perder
+    // la zona geografica cuando el usuario no hizo "Analizar brief" antes
+    var zonaGeo = extraerZonaGeografica(
+      (brief.brief || '') + ' ' +
+      (brief.contexto || '') + ' ' +
+      (brief.propuestaValor || '') + ' ' +
+      (window.KIVO_LAST_BRIEF || '')
+    );
     if (zonaGeo) {
       plan.copies = plan.copies.map(function(c) {
         if (!c) return c;
@@ -2264,7 +2316,8 @@ function buildBriefScore(brief, parsed) {
 // Solo es 'differential' si tiene un marcador real de diferenciacion verificable.
 function assessPropuestaValor(pv) {
   if (!pv) return 'empty';
-  var text = pv.trim().toLowerCase();
+  // FIX v3.4 polish: defensa contra tipos no-string (number, object, etc)
+  var text = String(pv).trim().toLowerCase();
   if (text.length < 15) return 'empty';
 
   // FIX v3.4 Accion B: Detectar "objetivo disfrazado de diferencial".
@@ -2978,7 +3031,14 @@ function buildCompIntelHTML(competencia, pais, categoria) {
 function sanitizeOportunidad(oportunidad, marca, categoria) {
   if (!oportunidad) return oportunidad;
   var orig = String(oportunidad);
-  var t = orig.toLowerCase();
+  // FIX v3.4 polish: normalizar acentos para que "asesoria" y "asesoria con acento" matcheen igual
+  var t = orig.toLowerCase()
+    .replace(/[\u00e1\u00e0\u00e4\u00e2]/g, 'a')
+    .replace(/[\u00e9\u00e8\u00eb\u00ea]/g, 'e')
+    .replace(/[\u00ed\u00ec\u00ef\u00ee]/g, 'i')
+    .replace(/[\u00f3\u00f2\u00f6\u00f4]/g, 'o')
+    .replace(/[\u00fa\u00f9\u00fc\u00fb]/g, 'u')
+    .replace(/[\u00f1]/g, 'n');
 
   // Lista de frases vacias que indican oportunidad mediocre
   var frasesVacias = [
