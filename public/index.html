@@ -877,7 +877,9 @@ body::before {
   .sidebar, .export-bar, .wl-bar, .launch-section, .measure-section,
   .register-gate, .pills-hint, .dedup-note, .metodologia-btn,
   .params-back, .params-regenerate, .btn-analizar, .missing-counter,
-  .comp-pill, #metodologiaDetail { display: none !important; }
+  .comp-pill, #metodologiaDetail,
+  /* FIX v3.4 polish (Bug D): toast de instrucciones NO debe aparecer en PDF */
+  .no-print-toast { display: none !important; }
 
   /* Layout */
   .app { display: block !important; }
@@ -1669,8 +1671,49 @@ function sanitizePlanOutput(plan, brief) {
 
       var origTitular = String(c.titular || '');
       var origDesc = String(c.descripcion || '');
-      if (numerosInventadosRegex.test(origTitular) || numerosInventadosRegex.test(origDesc)) {
-        warnings.push('Numero sin verificar (cantidad de clientes/ventas/anos) - editar antes de publicar');
+      // FIX v3.4 polish (Bug B): no solo avisar - REEMPLAZAR el numero inventado.
+      // El sanitizer detectaba "Mas de 100 clientes satisfechos" y dejaba el copy
+      // igual con un warning. Para una optica de 8 meses esto es vergonzoso.
+      // Ahora: reemplazamos la frase entera por un hook basado en el diferencial
+      // del brief (cuando hay algo concreto que usar) o por un placeholder neutro
+      // que NO compromete al cliente con un numero que no puede defender.
+      var titularTieneNumeroFalso = numerosInventadosRegex.test(origTitular);
+      var descTieneNumeroFalso = numerosInventadosRegex.test(origDesc);
+      if (titularTieneNumeroFalso || descTieneNumeroFalso) {
+        // Extraer un fragmento usable del diferencial/PV del brief
+        var hookReemplazo = '';
+        var pvBrief = String((brief && brief.propuestaValor) || '');
+        var ctxBrief = String((brief && brief.contexto) || '');
+        // Buscar terminos concretos del brief que sirvan como prueba real (no numero)
+        var fuenteHook = pvBrief || ctxBrief;
+        if (fuenteHook && fuenteHook.length > 10) {
+          // Tomar las primeras 6-8 palabras de algo concreto
+          var palabras = fuenteHook.replace(/\s+/g, ' ').trim().split(' ').slice(0, 7);
+          hookReemplazo = palabras.join(' ');
+          // Capitalizar
+          if (hookReemplazo.length > 0) {
+            hookReemplazo = hookReemplazo.charAt(0).toUpperCase() + hookReemplazo.slice(1);
+          }
+        }
+        // Fallback si no hay PV/contexto sustantivo
+        if (!hookReemplazo || hookReemplazo.length < 12) {
+          hookReemplazo = 'Atencion local cercana';
+        }
+        // Construir mensaje de reemplazo segun donde estaba el numero
+        var avisoReemplazo = 'Numero sin verificar reemplazado por hook basado en tu diferencial - revisa antes de publicar';
+        if (titularTieneNumeroFalso) {
+          c.titular = hookReemplazo;
+        }
+        if (descTieneNumeroFalso) {
+          // Para descripcion: usar version mas larga si es posible
+          var palabrasDesc = (pvBrief || ctxBrief || '').replace(/\s+/g, ' ').trim().split(' ').slice(0, 12);
+          var descReemplazo = palabrasDesc.length >= 5 ? palabrasDesc.join(' ') : 'Conoce nuestro diferencial real';
+          if (descReemplazo.length > 0) {
+            descReemplazo = descReemplazo.charAt(0).toUpperCase() + descReemplazo.slice(1);
+          }
+          c.descripcion = descReemplazo;
+        }
+        warnings.push(avisoReemplazo);
       }
 
       // FIX v3.4 M2: Limpiar descuento inventado del copy mismo (no solo avisar)
@@ -3038,7 +3081,7 @@ function buildCompIntelHTML(competencia, pais, categoria) {
 // El LLM tiende a devolver "atencion personalizada", "experiencia personalizada",
 // "lealtad", "calidad del servicio" - todas frases en las que las marcas grandes
 // invierten millones, por lo que NO son oportunidades reales para un negocio chico.
-function sanitizeOportunidad(oportunidad, marca, categoria) {
+function sanitizeOportunidad(oportunidad, marca, categoria, pvCliente) {
   if (!oportunidad) return oportunidad;
   var orig = String(oportunidad);
   // FIX v3.4 polish: normalizar acentos para que "asesoria" y "asesoria con acento" matcheen igual
@@ -3049,6 +3092,84 @@ function sanitizeOportunidad(oportunidad, marca, categoria) {
     .replace(/[\u00f3\u00f2\u00f6\u00f4]/g, 'o')
     .replace(/[\u00fa\u00f9\u00fc\u00fb]/g, 'u')
     .replace(/[\u00f1]/g, 'n');
+
+  // FIX v3.4 polish (Bug C): detectar si la oportunidad esta repitiendo el diferencial
+  // del cliente. Ej: cliente dice "entrega 48 horas" y LLM devuelve oportunidad
+  // "entregas express" o "entregar productos a domicilio". Eso es repetir, no aportar.
+  if (pvCliente && typeof pvCliente === 'string' && pvCliente.length > 10) {
+    var pvNorm = pvCliente.toLowerCase()
+      .replace(/[\u00e1\u00e0\u00e4\u00e2]/g, 'a').replace(/[\u00e9\u00e8\u00eb\u00ea]/g, 'e')
+      .replace(/[\u00ed\u00ec\u00ef\u00ee]/g, 'i').replace(/[\u00f3\u00f2\u00f6\u00f4]/g, 'o')
+      .replace(/[\u00fa\u00f9\u00fc\u00fb]/g, 'u').replace(/[\u00f1]/g, 'n');
+    // Extraer palabras clave del PV (4+ chars, no articulos)
+    var stopwords = ['para','con','que','los','las','del','por','una','uno','este','esta','muy','mas','sus','sin','nos','les','este','esta','estos','estas','desde','hasta','sobre','entre','aqui','alla','como','tienen','tiene','hace','hacer','hacen','tener','poder','puede','pueden','vamos','dijo','dice','tambien','solo','solos','solas','solamente'];
+    var pvPalabras = pvNorm.split(/[\s,;.]+/).filter(function(w) {
+      return w.length >= 4 && stopwords.indexOf(w) === -1;
+    });
+    // Si la oportunidad comparte palabras nucleo con el PV, es probable repeticion.
+    // Heuristica de experto: hay sustantivos/verbos "nucleo de diferencial" que cuando
+    // aparecen en ambos lados, indican repeticion (no aporte nuevo).
+    // Ej: PV "entrega 48 horas" + Op "entregar a domicilio" = repite "entreg".
+    var nucleosDiferencial = [
+      'entrega','entreg','despach','envio','envia',
+      'examen','examin','consult','revision','revis',
+      'asesor','asesori','consejos','recomendac',
+      'instalac','instala','montaj',
+      'garanti','reembols','devolu',
+      'cuotas','financiam','credit','pago',
+      'descuent','rebaja','oferta','promocion','promo',
+      'gratis','gratuit',
+      'rapido','rapid','express','expres','inmediat','urgente',
+      'personaliz','custom','medida','sabor',
+      'organic','natural','100%','premium','importad',
+      'whatsapp','telefon','llamada','video',
+      'local','tienda','sucursal','sede','barri','comun',
+      'cara a cara','cara','presencial',
+      'envio gratis','despacho gratis'
+    ];
+    var matchCount = 0;
+    var palabrasMatcheadas = [];
+    // PV normalizado, oportunidad normalizada
+    // Buscar nucleos que aparezcan en AMBOS
+    for (var n = 0; n < nucleosDiferencial.length; n++) {
+      var nucleo = nucleosDiferencial[n];
+      if (pvNorm.indexOf(nucleo) !== -1 && t.indexOf(nucleo) !== -1) {
+        if (palabrasMatcheadas.indexOf(nucleo) === -1) {
+          matchCount++;
+          palabrasMatcheadas.push(nucleo);
+        }
+      }
+    }
+    // Caso especial: si la oportunidad usa el MISMO sustantivo nucleo del PV
+    // (1 match es suficiente si es sustantivo claro), reemplazar
+    var sustantivosFuertes = ['entreg','examen','asesor','instalac','garanti','despach','consult'];
+    var soloUnMatchPeroFuerte = false;
+    if (matchCount === 1 && palabrasMatcheadas.length === 1) {
+      var raizMatch = palabrasMatcheadas[0].substring(0, 6);
+      for (var sf = 0; sf < sustantivosFuertes.length; sf++) {
+        if (sustantivosFuertes[sf].indexOf(raizMatch) === 0 || raizMatch.indexOf(sustantivosFuertes[sf].substring(0, 5)) === 0) {
+          soloUnMatchPeroFuerte = true;
+          break;
+        }
+      }
+    }
+    if (matchCount >= 2 || soloUnMatchPeroFuerte) {
+      // La oportunidad repite el diferencial. Reemplazamos por una oportunidad real
+      // segun el ataque estructural mas comun para esta categoria.
+      var oportRealPorCategoria = {
+        'Retail / E-commerce': 'Responder WhatsApp en menos de 5 minutos en horario comercial',
+        'Salud y Farma': 'Mostrar al profesional atendiendo en video corto desde el local',
+        'Servicios / Utilities': 'Garantizar respuesta en menos de 2 horas via WhatsApp',
+        'Inmobiliario': 'Mostrar la propiedad en video walk-through grabado por el dueno',
+        'Educacion': 'Subir testimonios reales de alumnos en video desde la sede',
+        'Belleza / Cosmetica': 'Mostrar el resultado en cliente real con video desde el local',
+        'Gastronomia': 'Mostrar la cocina y preparacion en stories diarios',
+        'Automotriz': 'Filmar el servicio en vivo y enviar updates por WhatsApp'
+      };
+      var oportReal = oportRealPorCategoria[categoria] || 'Responder en menos de 5 minutos via WhatsApp directo';
+      return oportReal;
+    }
+  }
 
   // Lista de frases vacias que indican oportunidad mediocre
   var frasesVacias = [
@@ -3074,6 +3195,20 @@ function sanitizeOportunidad(oportunidad, marca, categoria) {
   var esVacia = false;
   for (var f = 0; f < frasesVacias.length; f++) {
     if (t.indexOf(frasesVacias[f]) !== -1) { esVacia = true; break; }
+  }
+  // FIX v3.4 polish (Bug C): red de seguridad para cualquier "[sustantivo] personalizad*"
+  // que no este explicitamente en la lista. Es el patron clasico de frase vacia
+  // donde el LLM camufla "atencion personalizada" como "consultas/ajustes/recomendaciones
+  // personalizadas". Si pasa por aca, lo marcamos como vacio.
+  if (!esVacia && /personaliz(?:ad[oas]?|ada)\b/i.test(t)) {
+    esVacia = true;
+  }
+  // Tambien red de seguridad para "[verbo] consejos/recomendaciones" sin algo concreto
+  if (!esVacia && /(?:proporcionar|brindar|ofrecer|dar)\s+(?:consejos|recomendaciones|asesoria|asesoramiento|consultas)/i.test(t)) {
+    // Si no incluye algo concreto (numero, tiempo, plataforma), es vacio
+    if (!/\d|whatsapp|video|stories|reels|en\s+\d+\s+(?:min|hora|dia)/i.test(t)) {
+      esVacia = true;
+    }
   }
 
   if (!esVacia) return orig;
@@ -3129,7 +3264,7 @@ function sanitizeOportunidad(oportunidad, marca, categoria) {
   return pool[idx];
 }
 
-async function analyzeCompetitors(competencia, pais, categoria, objetivo) {
+async function analyzeCompetitors(competencia, pais, categoria, objetivo, clienteCtx) {
   if (!competencia) return;
   // FIX RUNTIME v3.1: blindar contra competencia que no sea string
   competencia = String(competencia);
@@ -3139,7 +3274,34 @@ async function analyzeCompetitors(competencia, pais, categoria, objetivo) {
   const brands = competencia.split(',').map(function(b) { return b.trim(); }).filter(Boolean);
   if (brands.length === 0) return;
 
-  const prompt = 'Eres un experto en inteligencia competitiva publicitaria en LATAM con criterio de planner senior. El cliente es de la categoria: ' + categoria + '. Analiza el comportamiento publicitario probable de estas marcas en ' + pais + '. IMPORTANTE: Solo analiza las marcas que sean competidores directos del mismo rubro. Si alguna marca NO es competidor directo del cliente en categoria ' + categoria + ', excluyela del analisis. Para cada marca relevante entrega: plataformas donde estan activos (max 3), su mensaje clave en 1 frase corta, y 1 oportunidad ESPECIFICA y ACCIONABLE de diferenciacion. REGLAS PARA LA OPORTUNIDAD: (a) NO uses generalidades vacias tipo "ofrecer experiencias personalizadas", "aumentar lealtad", "mejorar atencion al cliente". Eso es exactamente en lo que esas marcas grandes invierten millones. (b) La oportunidad debe explotar una DEBILIDAD ESTRUCTURAL de la marca grande: tiempos de despacho (vs entrega inmediata local), trato impersonal (vs atencion cara a cara), surtido masivo sin curaduria (vs seleccion experta), precios fijos (vs negociacion), web compleja (vs WhatsApp directo). (c) La oportunidad debe ser algo que un negocio chico PUEDE realmente ofrecer, no algo aspiracional. (d) Maximo 12 palabras, en infinitivo y con un verbo de accion concreto. Marcas a evaluar: ' + brands.join(', ') + '. Responde SOLO con JSON valido: {"analisis":[{"marca":"nombre","plataformas":"Meta, Google","mensaje":"frase corta del mensaje","oportunidad":"oportunidad concreta accionable y especifica"}]}';
+  // FIX v3.4 polish (Bug C): pasar el diferencial del cliente al LLM para que no lo repita
+  // como "oportunidad" (el bug donde decia "entregar productos a domicilio" cuando el cliente
+  // ya tenia entrega 48hr en su diferencial). Si no se pasa clienteCtx (compatibilidad
+  // backward), intentamos extraerlo de window.KIVO_LAST_PARSED.
+  var pvCliente = '';
+  var nivelComp = window.KIVO_NIVEL_COMPETITIVO || '';
+  if (clienteCtx && typeof clienteCtx === 'object') {
+    pvCliente = String(clienteCtx.propuestaValor || clienteCtx.propuesta_valor || '');
+  }
+  if (!pvCliente && window.KIVO_LAST_PARSED) {
+    pvCliente = String(window.KIVO_LAST_PARSED.propuesta_valor || window.KIVO_LAST_PARSED.propuestaValor || '');
+  }
+
+  const prompt =
+    'Eres un experto en inteligencia competitiva publicitaria en LATAM con criterio de planner senior. ' +
+    'El cliente es de la categoria: ' + categoria + ' en ' + pais + '. ' +
+    (nivelComp ? 'NIVEL COMPETITIVO DEL CLIENTE: ' + nivelComp + ' (juega en liga ' + nivelComp + ', no nacional). ' : '') +
+    (pvCliente ? 'DIFERENCIAL/PROPUESTA DE VALOR DEL CLIENTE (NO USAR COMO OPORTUNIDAD): "' + pvCliente.substring(0, 250) + '". ' : '') +
+    'Analiza el comportamiento publicitario probable de estas marcas. IMPORTANTE: Solo analiza marcas que sean competidores directos del mismo rubro. Si alguna marca NO es competidor directo, excluyela. ' +
+    'Para cada marca entrega: plataformas (max 3), mensaje clave en 1 frase, y 1 oportunidad ESPECIFICA y ACCIONABLE. ' +
+    '\n\nREGLAS ESTRICTAS PARA LA OPORTUNIDAD: ' +
+    '\n(R1) PROHIBIDO repetir el diferencial del cliente. Si el cliente ya dice que ofrece X (ej: "entrega 48hr", "examen gratis", "asesoria personalizada"), NO uses X como oportunidad. La oportunidad es lo que el cliente PUEDE empezar a hacer, no lo que YA hace. ' +
+    '\n(R2) PROHIBIDO generalidades vacias tipo "ofrecer experiencias personalizadas", "aumentar lealtad", "mejorar atencion al cliente", "consultas personalizadas", "ajustes personalizados". Esas son las palabras vacias que el LLM mediocre devuelve por defecto. ' +
+    '\n(R3) La oportunidad DEBE explotar una DEBILIDAD ESTRUCTURAL del competidor grande: tiempos de despacho (vs entrega inmediata local), trato impersonal (vs cara a cara), web compleja (vs WhatsApp directo), surtido masivo sin curaduria (vs seleccion experta), ausencia en redes locales (vs presencia barrio), call centers (vs telefono directo). ' +
+    '\n(R4) La oportunidad debe ser algo que un negocio chico PUEDE empezar a hacer en menos de 30 dias, sin inversion grande. ' +
+    '\n(R5) Maximo 10 palabras, en infinitivo con verbo de accion concreto. Empieza con verbo. Ejemplos buenos: "Responder WhatsApp en menos de 5 minutos en horario comercial", "Recomendar producto en video corto grabado por el dueno", "Mostrar testimonios reales en video desde el local". Ejemplos prohibidos: "Ofrecer experiencias personalizadas", "Mejorar la atencion al cliente". ' +
+    '\n\nMarcas a evaluar: ' + brands.join(', ') + '. ' +
+    '\nResponde SOLO con JSON valido: {"analisis":[{"marca":"nombre","plataformas":"Meta, Google","mensaje":"frase corta","oportunidad":"verbo accion concreta menos de 10 palabras"}]}';
 
   try {
     const raw = await safeGroqCall(prompt, 1000, 2);
@@ -3165,7 +3327,7 @@ async function analyzeCompetitors(competencia, pais, categoria, objetivo) {
         // El LLM desobedece la regla del prompt y devuelve "atencion personalizada",
         // "lealtad", "experiencia personalizada" - frases vacias que el cliente
         // de Cristian leeria y diria "esto es generico". Reemplazamos por accion concreta.
-        a.oportunidad = sanitizeOportunidad(a.oportunidad, a.marca, categoria);
+        a.oportunidad = sanitizeOportunidad(a.oportunidad, a.marca, categoria, pvCliente);
         tableHTML +=
           '<tr>' +
             '<td class="comp-td-brand">' + a.marca + '</td>' +
@@ -3396,10 +3558,30 @@ async function buscarCompetenciaRealista(brief, parsed, mismatch) {
 function sanitizeSugerenciasCompetencia(sugerencias, marcasRechazadas) {
   if (!Array.isArray(sugerencias)) return [];
   var rechazadasLower = String(marcasRechazadas || '').toLowerCase();
+  // FIX v3.4 polish: lista expandida en linea con detectarMismatchCompetencia
+  // para que las sugerencias del LLM no incluyan cadenas grandes que ya fueron
+  // rechazadas, incluso si el LLM intenta colarlas en otras categorias verticales.
   var grandesRetailers = [
-    'falabella','paris','ripley','la polar','lider','jumbo','unimarc',
-    'tottus','santa isabel','sodimac','easy','homecenter','mercadolibre',
-    'mercado libre','linio','corona','casaideas','amazon','aliexpress','shein','temu'
+    'falabella','paris','ripley','la polar','hites','corona',
+    'lider','walmart','jumbo','unimarc','tottus','santa isabel','ekono',
+    'sodimac','easy','homecenter','imperial','construmart',
+    'mercadolibre','mercado libre','linio','dafiti',
+    'casaideas','amazon','aliexpress','shein','temu','wish',
+    // Opticas
+    'rotter y krauss','rotter krauss','opticas gmo','schilling','devlyn','place vendome',
+    // Farma
+    'cruz verde','farmacias ahumada','salcobrand','dr. simi','dr simi','knop',
+    // Salud
+    'redsalud','red salud','integramedica','vidaintegra','banmedica',
+    'clinica las condes','clinica santa maria','clinica alemana','clinica davila','clinica indisa','clinica bupa',
+    // Educacion
+    'pedro de valdivia','cpech','puntaje nacional',
+    // Gimnasios
+    'smart fit','smartfit','sportlife','sport life','energy fitness','pacific fitness',
+    // Fast food
+    'mcdonalds',"mcdonald's",'burger king','kfc','subway','doggis','dominos','pizza hut','starbucks','juan valdez',
+    // Belleza
+    'preunic','maicao','dbs'
   ];
   var resultado = [];
   for (var i = 0; i < sugerencias.length && resultado.length < 7; i++) {
@@ -3512,7 +3694,7 @@ function aplicarSugerenciasComp(textos) {
     var pais = (b && b.pais) || 'Chile';
     var categoria = (b && b.categoria) || '';
     var objetivo = (b && b.objetivo) || '';
-    analyzeCompetitors(textos.join(', '), pais, categoria, objetivo);
+    analyzeCompetitors(textos.join(', '), pais, categoria, objetivo, b);
   }
   // Notificar al usuario
   console.log('[KIVO] Competencia actualizada con sugerencias: ' + textos.join(', '));
@@ -3632,19 +3814,77 @@ function detectarNivelCompetitivo(brief, propuestaValor, contexto, presupuesto) 
 // Ej: cliente hiperlocal + competencia "Falabella, Paris, Ripley" => warning.
 function detectarMismatchCompetencia(nivelCompetitivo, competenciaTexto) {
   if (!competenciaTexto || !nivelCompetitivo) return null;
+  // FIX v3.4 polish: ampliar la lista de "grandes retailers" para cubrir
+  // verticales especificas. El bug original era que solo cubria retail general
+  // (Falabella/Paris/Ripley), pero la mayoria del comercio LATAM hiperlocal
+  // compite con cadenas verticales (opticas, farmacias, salud, educacion,
+  // gimnasios, etc). Si esas no estan en la lista, el banner nunca se activa
+  // y el usuario obtiene analisis competitivo incoherente.
   var grandesRetailersChile = [
-    'falabella', 'paris', 'ripley', 'la polar',
-    'lider', 'jumbo', 'unimarc', 'tottus', 'santa isabel',
-    'sodimac', 'easy', 'homecenter',
-    'mercadolibre', 'mercado libre', 'linio',
-    'corona', 'casaideas', 'paris.cl', 'falabella.com'
+    // Retail general - Chile
+    'falabella', 'paris', 'ripley', 'la polar', 'hites', 'corona',
+    // Supermercados - Chile
+    'lider', 'walmart', 'jumbo', 'unimarc', 'tottus', 'santa isabel', 'ekono',
+    // Mejoramiento del hogar - Chile
+    'sodimac', 'easy', 'homecenter', 'imperial', 'construmart',
+    // Marketplaces
+    'mercadolibre', 'mercado libre', 'mercado libre chile', 'linio', 'dafiti',
+    // Decoracion / hogar - Chile
+    'casaideas', 'paris.cl', 'falabella.com',
+    // OPTICAS (cadenas nacionales Chile)
+    'rotter y krauss', 'rotter krauss', 'opticas gmo', ' gmo ', 'gmo ', ' gmo,', 'opticas schilling',
+    'devlyn', 'opticas place vendome', 'place vendome', 'opticas econopticas',
+    // FARMACIAS (cadenas nacionales Chile)
+    'cruz verde', 'farmacias ahumada', 'farmacia ahumada', 'salcobrand',
+    'dr. simi', 'dr simi', 'doctor simi', 'farmacia knop', 'farmacias salco',
+    // SALUD / CLINICAS (Chile)
+    'redsalud', 'red salud', 'integramedica', 'integra medica', 'vidaintegra',
+    'banmedica', 'clinica las condes', 'clinica santa maria', 'clinica alemana',
+    'clinica davila', 'clinica indisa', 'clinica bupa',
+    // EDUCACION / PREUNIVERSITARIOS (Chile)
+    'preuniversitario pedro de valdivia', 'pedro de valdivia',
+    'cpech', 'preuniversitario cpech', 'puntaje nacional', 'plataforma puntaje',
+    // GIMNASIOS (Chile + LATAM)
+    'smart fit', 'smartfit', 'sportlife', 'sport life', 'energy fitness',
+    'pacific fitness', 'club privee',
+    // FAST FOOD / RESTAURANTES (cadenas)
+    'mcdonalds', "mcdonald's", 'burger king', 'kfc', 'subway', 'doggis',
+    'papa johns', 'papa john', 'dominos', "domino's", 'pizza hut',
+    'starbucks', 'juan valdez', 'bonafide',
+    // BELLEZA / COSMETICA (cadenas)
+    'preunic', 'maicao', 'dbs',
+    // TECNOLOGIA / ELECTRO
+    'pc factory', 'pc factory.cl', 'spdigital',
+    // ECOMMERCE INTERNACIONAL
+    'amazon', 'aliexpress', 'shein', 'temu', 'wish',
+    // Argentina
+    'coto', 'disco', 'carrefour', 'farmacity', 'dia%', 'easy argentina',
+    // Mexico
+    'liverpool', 'palacio de hierro', 'soriana', 'comercial mexicana',
+    'walmart mexico', 'farmacias del ahorro', 'farmacia guadalajara', 'farmacia san pablo',
+    // Colombia
+    'exito', '\u00e9xito', 'olimpica', 'ol\u00edmpica', 'jumbo colombia',
+    'cruz verde colombia', 'la rebaja', 'farmatodo',
+    // Peru
+    'tottus peru', 'plaza vea', 'wong', 'metro peru', 'inkafarma', 'mifarma',
+    'oechsle'
   ];
   // FIX v3.3: defensa contra competencia no-string
   var t = String(competenciaTexto).toLowerCase();
   var hasGrandRetailer = false;
   var grandesEncontrados = [];
   grandesRetailersChile.forEach(function(g) {
-    if (t.indexOf(g) !== -1) { hasGrandRetailer = true; grandesEncontrados.push(g); }
+    // Para nombres muy cortos (3 chars o menos como "gmo") solo matchear con bordes
+    // para evitar falsos positivos. Para nombres largos, indexOf normal funciona.
+    var found = false;
+    if (g.length <= 4) {
+      // Match con word boundaries simulados (espacios, comas, principio/fin)
+      var re = new RegExp('(^|[\\s,;]|^)' + g.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[\\s,;.])', 'i');
+      found = re.test(' ' + t + ' ');
+    } else {
+      found = t.indexOf(g) !== -1;
+    }
+    if (found) { hasGrandRetailer = true; grandesEncontrados.push(g.trim()); }
   });
 
   if (hasGrandRetailer && (nivelCompetitivo === 'hiperlocal' || nivelCompetitivo === 'local')) {
@@ -4109,14 +4349,14 @@ INTERESES: Compras, Finanzas, Tecnolog\u00eda, Deporte, Familia, Viajes, Gaming,
       console.log('[KIVO] Competencia del usuario: ' + userCompetencia + ' -> usando directamente');
       updateCompLinks();
       if (parsed.categoria && parsed.pais) {
-        analyzeCompetitors(userCompetencia, parsed.pais, parsed.categoria, parsed.objetivo || '');
+        analyzeCompetitors(userCompetencia, parsed.pais, parsed.categoria, parsed.objetivo || '', parsed);
       }
     } else if (hasRealNames && parsed.competencia) {
       // IA extrajo nombres reales del brief -> usar pero tambien analizar
       setTimeout(function() {
         updateCompLinks();
         if (parsed.categoria && parsed.pais) {
-          analyzeCompetitors(parsed.competencia, parsed.pais, parsed.categoria, parsed.objetivo || '');
+          analyzeCompetitors(parsed.competencia, parsed.pais, parsed.categoria, parsed.objetivo || '', parsed);
         }
       }, fields.length * 80 + 500);
     } else {
@@ -4936,7 +5176,12 @@ function exportPDF() {
   if (agTagline) agTagline.textContent = wlTagline || 'Plan de medios digitales';
 
   // Show instruction toast
+  // FIX v3.4 polish (Bug D): el toast no debe aparecer en el PDF exportado.
+  // El bug era que window.print() capturaba el toast dentro del PDF generado
+  // (visible en cada pagina como "En el dialogo que se abre: Selecciona Guardar
+  // como PDF"). Solucion: clase no-print + @media print display:none.
   var toast = document.createElement('div');
+  toast.className = 'no-print-toast';
   toast.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#1e1e2e;border:1px solid rgba(91,127,255,0.4);border-radius:12px;padding:14px 22px;font-size:13px;color:#eeeef5;z-index:99999;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.5);font-family:Outfit,sans-serif;';
   toast.innerHTML = '<strong style="color:#5b7fff">En el dialogo que se abre:</strong><br>Selecciona <strong>"Guardar como PDF"</strong> como destino';
   document.body.appendChild(toast);
@@ -5987,7 +6232,7 @@ function renderResult(plan, b) {
   // Trigger AI competitor analysis async after render
   if (b.competencia) {
     setTimeout(function() {
-      analyzeCompetitors(b.competencia, b.pais, b.categoria, b.objetivo);
+      analyzeCompetitors(b.competencia, b.pais, b.categoria, b.objetivo, b);
     }, 800);
   }
 }
