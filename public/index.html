@@ -258,6 +258,16 @@ body::before {
 .scope-banner-link:hover { text-decoration: underline; }
 .scope-banner-dismiss { color: var(--text-tertiary); cursor: pointer; font-size: 11px; margin-left: auto; }
 .scope-banner-dismiss:hover { color: var(--text-secondary); }
+.comp-real-search-btn { background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.4); color: #a5b4fc; padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; font-family: inherit; }
+.comp-real-search-btn:hover:not(:disabled) { background: rgba(99,102,241,0.25); border-color: rgba(99,102,241,0.6); }
+.comp-real-search-btn:disabled { opacity: 0.5; cursor: wait; }
+.comp-real-chip { display: inline-block; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); color: var(--text-secondary); padding: 6px 12px; border-radius: 14px; font-size: 12px; cursor: pointer; transition: all 0.12s; user-select: none; }
+.comp-real-chip:hover { background: rgba(99,102,241,0.1); border-color: rgba(99,102,241,0.3); color: var(--text-primary); }
+.comp-real-chip.selected { background: rgba(99,102,241,0.25); border-color: rgba(99,102,241,0.6); color: #c7d2fe; font-weight: 500; }
+.comp-real-action { background: rgba(34,197,94,0.18); border: 1px solid rgba(34,197,94,0.45); color: #86efac; padding: 5px 12px; border-radius: 6px; font-size: 11px; font-weight: 500; cursor: pointer; font-family: inherit; }
+.comp-real-action:hover { background: rgba(34,197,94,0.28); }
+.comp-real-action-secondary { background: transparent; border: 1px solid rgba(255,255,255,0.15); color: var(--text-secondary); padding: 5px 12px; border-radius: 6px; font-size: 11px; cursor: pointer; font-family: inherit; }
+.comp-real-action-secondary:hover { background: rgba(255,255,255,0.04); color: var(--text-primary); }
 .metodologia-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:10px; padding:10px 16px; flex-wrap:wrap; }
 .metodologia-badge { font-size:9px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:var(--blue); background:rgba(91,127,255,0.1); padding:3px 8px; border-radius:5px; flex-shrink:0; }
 .metodologia-text { font-size:10px; color:var(--text-tertiary); line-height:1.5; }
@@ -3290,10 +3300,222 @@ function renderCompetitionLevelWarning(brief, parsed) {
       'Camina o googlea por tu barrio/comuna, mira que hacen los locales similares al tuyo. ' +
       'Si no conoces a tu competencia real, el plan no podra diferenciarte.' +
     '</div>' +
-    '<div class="scope-banner-actions">' +
+    '<div id="compRealChips" style="margin-top:12px;"></div>' +
+    '<div class="scope-banner-actions" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">' +
+      '<button id="btnBuscarCompReal" class="comp-real-search-btn" onclick="buscarCompetenciaRealista(window.KIVO_LAST_BRIEF, window.KIVO_LAST_PARSED, window.KIVO_LAST_MISMATCH)">\ud83d\udd0d Buscar competencia realista</button>' +
       '<span class="scope-banner-dismiss" onclick="dismissCompetitionLevelBanner()">Entiendo, sigo de todas formas</span>' +
     '</div>';
+  // Guardar el mismatch para que el boton pueda usarlo
+  window.KIVO_LAST_MISMATCH = mismatch;
   banner.className = 'scope-banner visible';
+}
+
+// FIX v3.4 polish: cuando hay mismatch de competencia, KIVO ahora puede
+// sugerir competidores realistas en lugar de solo avisar. Llama al LLM con
+// contexto del brief (categoria, nivel competitivo, zona geo) y devuelve
+// 3-7 sugerencias de negocios similares al cliente. Defense profunda contra
+// outputs hostiles del LLM (tipos raros, longitudes invalidas, retailers
+// ya rechazados que se vuelven a colar).
+async function buscarCompetenciaRealista(brief, parsed, mismatch) {
+  var btn = document.getElementById('btnBuscarCompReal');
+  var chipsContainer = document.getElementById('compRealChips');
+  if (!btn || !chipsContainer) return;
+
+  // Loading state
+  btn.disabled = true;
+  btn.textContent = 'Buscando competencia realista...';
+  chipsContainer.innerHTML = '';
+
+  try {
+    var categoria = (parsed && parsed.categoria) || '';
+    var nivel = window.KIVO_NIVEL_COMPETITIVO || 'local';
+    var pais = (parsed && parsed.pais) || 'Chile';
+    var pv = (parsed && parsed.propuesta_valor) || '';
+    var contexto = (parsed && parsed.contexto) || '';
+
+    // Extraer zona geografica del brief para dar contexto al LLM
+    var zona = extraerZonaGeografica(
+      (brief || '') + ' ' + contexto + ' ' + pv
+    );
+
+    // Identificar los retailers rechazados para excluirlos explicitamente
+    var rechazados = (mismatch && mismatch.mensaje) ? mismatch.mensaje : '';
+    var rechazadosMatch = rechazados.match(/grandes retailers \(([^)]+)\)/i);
+    var marcasRechazadas = rechazadosMatch ? rechazadosMatch[1] : '';
+
+    var prompt =
+      'Eres un experto en mercado local LATAM con conocimiento profundo de pequenos negocios. ' +
+      'Necesito identificar 5 competidores REALES y especificos para este cliente: ' +
+      '\n\nCATEGORIA: ' + categoria +
+      '\nPAIS: ' + pais +
+      '\nNIVEL COMPETITIVO: ' + nivel + ' (hiperlocal=barrio/strip-center, local=una comuna o ciudad chica)' +
+      (zona ? '\nZONA GEOGRAFICA: ' + zona : '\nZONA GEOGRAFICA: no especificada en el brief - asume Santiago, Chile') +
+      '\nPROPUESTA DE VALOR: ' + pv +
+      '\nCONTEXTO: ' + contexto +
+      '\nBRIEF ORIGINAL: ' + (brief || '').substring(0, 500) +
+      '\n\nEXCLUIR: grandes retailers nacionales como ' + marcasRechazadas + ' y similares (Falabella, Paris, Ripley, Lider, Jumbo, Sodimac, Mercado Libre, etc). NO los incluyas porque juegan en otra liga.' +
+      '\n\nINSTRUCCIONES:' +
+      '\n1. Devuelve 5 nombres de competidores que un negocio ' + nivel + ' de la categoria ' + categoria + ' en ' + (zona || 'Santiago') + ' realmente enfrentaria en su dia a dia.' +
+      '\n2. Si conoces nombres reales de negocios chicos/medianos en esa zona, usalos.' +
+      '\n3. Si no conoces nombres especificos, devuelve TIPOS de negocio descriptivos. Ejemplo: "Zapaterias independientes del barrio", "Tiendas multimarca de calzado en strip centers", "Importadores chicos via Instagram".' +
+      '\n4. NO inventes marcas que no existen. Si no sabes, usa TIPOS.' +
+      '\n5. Cada sugerencia debe ser texto corto (3-50 caracteres). Sin descripciones largas.' +
+      '\n\nResponde SOLO con JSON valido: {"sugerencias":["nombre1","nombre2","nombre3","nombre4","nombre5"]}';
+
+    var raw = await safeGroqCall(prompt, 600, 2);
+    var parsed_resp = safeExtractJSON(raw);
+
+    if (!parsed_resp || !parsed_resp.sugerencias) {
+      chipsContainer.innerHTML = '<div style="color:#fca5a5;font-size:13px;padding:8px 0;">No se pudieron generar sugerencias. Intenta de nuevo o escribe la competencia manualmente.</div>';
+      btn.disabled = false;
+      btn.textContent = 'Reintentar busqueda';
+      return;
+    }
+
+    // Defense profunda: validar el output del LLM
+    var sugerenciasValidas = sanitizeSugerenciasCompetencia(parsed_resp.sugerencias, marcasRechazadas);
+    if (sugerenciasValidas.length < 3) {
+      chipsContainer.innerHTML = '<div style="color:#fca5a5;font-size:13px;padding:8px 0;">Las sugerencias generadas no fueron utiles. Mejor escribilas manualmente: 3-5 negocios de tu zona.</div>';
+      btn.disabled = false;
+      btn.textContent = 'Reintentar busqueda';
+      return;
+    }
+
+    // Renderizar chips
+    renderSugerenciasCompChips(sugerenciasValidas);
+    btn.style.display = 'none';
+  } catch (e) {
+    console.error('[KIVO] buscarCompetenciaRealista error:', e);
+    chipsContainer.innerHTML = '<div style="color:#fca5a5;font-size:13px;padding:8px 0;">Error al buscar sugerencias. Intenta de nuevo.</div>';
+    btn.disabled = false;
+    btn.textContent = 'Reintentar busqueda';
+  }
+}
+
+// Defense profunda contra outputs hostiles del LLM en sugerencias de competencia
+function sanitizeSugerenciasCompetencia(sugerencias, marcasRechazadas) {
+  if (!Array.isArray(sugerencias)) return [];
+  var rechazadasLower = String(marcasRechazadas || '').toLowerCase();
+  var grandesRetailers = [
+    'falabella','paris','ripley','la polar','lider','jumbo','unimarc',
+    'tottus','santa isabel','sodimac','easy','homecenter','mercadolibre',
+    'mercado libre','linio','corona','casaideas','amazon','aliexpress','shein','temu'
+  ];
+  var resultado = [];
+  for (var i = 0; i < sugerencias.length && resultado.length < 7; i++) {
+    var s = sugerencias[i];
+    if (!s || typeof s !== 'string') continue;
+    s = s.trim();
+    if (s.length < 3 || s.length > 60) continue;
+    var sLower = s.toLowerCase();
+    // Excluir retailers grandes que se vuelven a colar
+    var esGrande = false;
+    for (var g = 0; g < grandesRetailers.length; g++) {
+      if (sLower.indexOf(grandesRetailers[g]) !== -1) { esGrande = true; break; }
+    }
+    if (esGrande) continue;
+    // Tambien excluir los que estan en la lista de rechazados original
+    if (rechazadasLower && rechazadasLower.indexOf(sLower) !== -1) continue;
+    // Evitar duplicados
+    var yaEsta = false;
+    for (var d = 0; d < resultado.length; d++) {
+      if (resultado[d].toLowerCase() === sLower) { yaEsta = true; break; }
+    }
+    if (yaEsta) continue;
+    resultado.push(s);
+  }
+  return resultado;
+}
+
+function renderSugerenciasCompChips(sugerencias) {
+  var chipsContainer = document.getElementById('compRealChips');
+  if (!chipsContainer) return;
+  var html =
+    '<div style="font-size:13px;color:#a5b4fc;margin-bottom:8px;font-weight:500;">' +
+      'Sugerencias de competencia realista (toca para usar todas o selecciona individualmente):' +
+    '</div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">';
+  for (var i = 0; i < sugerencias.length; i++) {
+    var s = sugerencias[i].replace(/"/g, '&quot;');
+    html += '<span class="comp-real-chip" onclick="toggleSugerenciaComp(this)" data-text="' + s + '">' + sugerencias[i] + '</span>';
+  }
+  html += '</div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+      '<button class="comp-real-action" onclick="aceptarTodasSugerenciasComp()">Usar todas</button>' +
+      '<button class="comp-real-action-secondary" onclick="aceptarSeleccionadasComp()">Usar seleccionadas</button>' +
+      '<button class="comp-real-action-secondary" onclick="rechazarSugerenciasComp()">Ninguna, prefiero escribirlas</button>' +
+    '</div>';
+  chipsContainer.innerHTML = html;
+}
+
+function toggleSugerenciaComp(el) {
+  if (!el) return;
+  if (el.classList.contains('selected')) {
+    el.classList.remove('selected');
+  } else {
+    el.classList.add('selected');
+  }
+}
+
+function aceptarTodasSugerenciasComp() {
+  var chips = document.querySelectorAll('#compRealChips .comp-real-chip');
+  var textos = [];
+  for (var i = 0; i < chips.length; i++) {
+    textos.push(chips[i].getAttribute('data-text'));
+  }
+  aplicarSugerenciasComp(textos);
+}
+
+function aceptarSeleccionadasComp() {
+  var chips = document.querySelectorAll('#compRealChips .comp-real-chip.selected');
+  if (chips.length === 0) {
+    alert('Toca al menos una sugerencia para seleccionarla, o usa "Usar todas".');
+    return;
+  }
+  var textos = [];
+  for (var i = 0; i < chips.length; i++) {
+    textos.push(chips[i].getAttribute('data-text'));
+  }
+  aplicarSugerenciasComp(textos);
+}
+
+function rechazarSugerenciasComp() {
+  var chipsContainer = document.getElementById('compRealChips');
+  if (chipsContainer) chipsContainer.innerHTML = '';
+  var btn = document.getElementById('btnBuscarCompReal');
+  if (btn) {
+    btn.style.display = '';
+    btn.disabled = false;
+    btn.textContent = 'Buscar competencia realista';
+  }
+  var compInput = document.getElementById('competencia');
+  if (compInput) {
+    compInput.focus();
+    compInput.select();
+  }
+}
+
+function aplicarSugerenciasComp(textos) {
+  if (!textos || textos.length === 0) return;
+  var compInput = document.getElementById('competencia');
+  if (!compInput) return;
+  compInput.value = textos.join(', ');
+  // Limpiar el banner de mismatch ya que la competencia fue actualizada
+  var banner = document.getElementById('competitionLevelBanner');
+  if (banner) {
+    banner.className = 'scope-banner';
+    banner.innerHTML = '';
+  }
+  // Re-correr el analisis competitivo con la nueva competencia
+  var b = window.KIVO_LAST_PARSED;
+  if (typeof analyzeCompetitors === 'function') {
+    var pais = (b && b.pais) || 'Chile';
+    var categoria = (b && b.categoria) || '';
+    var objetivo = (b && b.objetivo) || '';
+    analyzeCompetitors(textos.join(', '), pais, categoria, objetivo);
+  }
+  // Notificar al usuario
+  console.log('[KIVO] Competencia actualizada con sugerencias: ' + textos.join(', '));
 }
 
 function dismissCompetitionLevelBanner() {
@@ -3807,10 +4029,30 @@ INTERESES: Compras, Finanzas, Tecnolog\u00eda, Deporte, Familia, Viajes, Gaming,
     // Datos necesarios para activar la campa a - solo si no est n en el brief
     const briefText = brief.toLowerCase();
 
-    // Detectar si el brief ya menciona ciudades/regiones espec ficas
-    const ciudades = ['la serena','coquimbo','concepci\u00f3n','concepcion','biob\u00edo','biobio','santiago','valpara\u00edso','valparaiso','antofagasta','temuco','rancagua','iquique','arica','talca','puerto montt','chill\u00e1n','chillan','regi\u00f3n','region','norte','sur'];
+    // Detectar si el brief ya menciona ciudades/regiones especificas o comunas
+    // FIX v3.4 polish: incluir comunas de Santiago + ciudades intermedias.
+    // Antes solo tenia ciudades grandes, entonces "strip center de Maipu" no se detectaba.
+    const ciudades = [
+      // Ciudades grandes
+      'la serena','coquimbo','concepci\u00f3n','concepcion','biob\u00edo','biobio','santiago',
+      'valpara\u00edso','valparaiso','antofagasta','temuco','rancagua','iquique','arica',
+      'talca','puerto montt','chill\u00e1n','chillan','osorno','punta arenas','copiap\u00f3','copiapo',
+      'puerto varas','puc\u00f3n','pucon','villarrica','castro','vi\u00f1a del mar','vina del mar',
+      // Comunas Santiago
+      'maip\u00fa','maipu','providencia','las condes','la florida','puente alto','\u00f1u\u00f1oa','nunoa',
+      'vitacura','lo barnechea','la reina','macul','pe\u00f1alol\u00e9n','penalolen','la cisterna',
+      'san miguel','estaci\u00f3n central','estacion central','quilicura','pudahuel','cerrillos',
+      'el bosque','recoleta','independencia','huechuraba','concha\u00ed','conchali',
+      'santiago centro','san bernardo','la pintana','renca','lo prado','quinta normal',
+      // Otros LATAM
+      'lima','miraflores','barranco','bogot\u00e1','bogota','medell\u00edn','medellin','cali',
+      'cartagena','cdmx','guadalajara','monterrey','polanco','condesa','roma norte',
+      'palermo','belgrano','caballito','rosario','c\u00f3rdoba','cordoba','mendoza',
+      // Genericos
+      'regi\u00f3n','region','comuna','barrio','centro','zona'
+    ];
     const tieneGeo = ciudades.some(function(c) { return briefText.includes(c); });
-    if (!tieneGeo) missing.push({ field: 'geo', pregunta: '\u00bfA qu\u00e9 ciudades o regiones espec\u00edficas quieres llegar? Meta y Google segmentan por ubicaci\u00f3n exacta - "zona norte" no alcanza.', tipo: 'text', placeholder: 'Ej: La Serena, Coquimbo, Concepci\u00f3n, Regi\u00f3n del Biob\u00edo' });
+    if (!tieneGeo) missing.push({ field: 'geo', pregunta: '\u00bfA qu\u00e9 ciudades, comunas o regiones quieres llegar? Meta y Google segmentan por ubicaci\u00f3n exacta. Mientras m\u00e1s espec\u00edfico mejor (ej: Maip\u00fa, Providencia, Pudahuel) - frases gen\u00e9ricas como "zona norte" o "todo Chile" no funcionan bien.', tipo: 'text', placeholder: 'Ej: Maip\u00fa, Pudahuel, Cerrillos (comunas vecinas)' });
 
     // Detectar si el brief ya menciona propuesta de valor
     const propuestaKeywords = ['porque','por qu\u00e9','diferencia','ventaja','beneficio','sin ','gratis','r\u00e1pido','rapido','garant\u00eda','garantia','\u00fanico','unico','mejor','instalamos','ofrecemos','proveemos','servicio'];
