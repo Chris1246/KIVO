@@ -1564,6 +1564,20 @@ function construirHooksDesdePV(pvText) {
   return { titular: titular, descripcion: descripcion };
 }
 
+// FIX v3.6 (Fix B): rango CPL por categoria - MISMA fuente que usa la proyeccion de
+// leads (renderResult). Asegura que el umbral_exito y los triggers de reglas hablen el
+// mismo idioma que el numero proyectado. Antes el umbral era un $12 plano que declaraba
+// fracaso a una automotora rindiendo en su CPL real de $20-35.
+function cplRangeForCategory(cat) {
+  var m = {
+    'Servicios / Utilities': [8, 15], 'Banca y Finanzas': [15, 30],
+    'Inmobiliario': [20, 40], 'Automotriz': [20, 35],
+    'Educaci\u00f3n': [10, 20], 'Salud y Farma': [8, 18],
+    'Retail / E-commerce': [5, 10], 'default': [8, 15]
+  };
+  return m[String(cat || 'default')] || m['default'];
+}
+
 function sanitizePlanOutput(plan, brief) {
   if (!plan) return plan;
   // FIX v3.4 polish: defensa profunda contra tipos hostiles del LLM.
@@ -1851,9 +1865,17 @@ function sanitizePlanOutput(plan, brief) {
     var hasWA = platformsList.some(function(p) { return p && p.toLowerCase().indexOf('whatsapp') !== -1; });
     var objetivo = (brief && brief.objetivo) || 'leads';
     var metricaCosto = (objetivo === 'ventas' || objetivo === 'leads') ? 'CPL' : 'CPC';
-    // CPL/CPC realista por pais. Para Chile pixel frio retail local: CPL $8-15 USD primer mes.
+    // CPL/CPC realista por pais y CATEGORIA. El trigger de pausa debe estar por encima
+    // del extremo alto del CPL realista de la categoria, no en un $12 plano que pausaria
+    // una automotora ($20-35) que esta rindiendo dentro de lo proyectado.
     var pais = (brief && brief.pais) || 'Chile';
-    var umbralCPL = (pais === 'Chile' || pais === 'Peru' || pais === 'Colombia') ? '$12 USD' : '$15 USD';
+    var umbralCPL;
+    if (metricaCosto === 'CPL') {
+      var catCPLrule = cplRangeForCategory((brief && brief.categoria) || 'default');
+      umbralCPL = '$' + Math.round(catCPLrule[1] * 1.15) + ' USD';
+    } else {
+      umbralCPL = (pais === 'Chile' || pais === 'Peru' || pais === 'Colombia') ? '$2 USD' : '$3 USD';
+    }
 
     var defaults = [
       {
@@ -1891,6 +1913,31 @@ function sanitizePlanOutput(plan, brief) {
     plan.criterios_exito.reglas_reasignacion = existing;
   }
 
+  // FIX v3.6 (Fix B): alinear triggers de reglas CPL con el benchmark de la categoria.
+  // El LLM a veces devuelve "CPL supera $12" para una automotora cuyo CPL real es $20-35,
+  // lo que pausaria una campana que esta rindiendo dentro de lo proyectado. Subimos
+  // cualquier trigger CPL por debajo del extremo alto del benchmark.
+  if (plan.criterios_exito && Array.isArray(plan.criterios_exito.reglas_reasignacion)) {
+    var catRangeRules = cplRangeForCategory((brief && brief.categoria) || 'default');
+    var triggerMin = Math.round(catRangeRules[1] * 1.15);
+    var rulesArr = plan.criterios_exito.reglas_reasignacion;
+    for (var rri = 0; rri < rulesArr.length; rri++) {
+      if (!rulesArr[rri] || !rulesArr[rri].si) continue;
+      var siTxt = String(rulesArr[rri].si);
+      var siLow = siTxt.toLowerCase();
+      if ((siLow.indexOf('cpl') !== -1 || siLow.indexOf('cpa') !== -1) && siLow.indexOf('supera') !== -1) {
+        var mNum = siTxt.match(/\$?\s*(\d+(?:\.\d+)?)/);
+        if (mNum) {
+          var triggerVal = parseFloat(mNum[1]);
+          if (triggerVal > 0 && triggerVal < triggerMin) {
+            rulesArr[rri].si = siTxt.replace(/\$?\s*\d+(?:\.\d+)?\s*(?:usd)?/i, '$' + triggerMin + ' USD');
+          }
+        }
+      }
+    }
+    plan.criterios_exito.reglas_reasignacion = rulesArr;
+  }
+
   // ---- 3) Calibrar y formatear umbral_exito ----
   // FIX v3.3 - Accion 2: ANTES solo recalibraba si era CPL bajo. AHORA siempre
   // formatea con unidad clara aunque el LLM devuelva solo "10" sin contexto.
@@ -1910,11 +1957,15 @@ function sanitizePlanOutput(plan, brief) {
       if (v > 0 && v <= 100 && (minValor === null || v < minValor)) minValor = v;
     }
 
-    // CASO A: CPL/CPA con valor irreal para LATAM pixel frio -> recalibrar a $12
-    if (esLatam && (metrica.indexOf('cpl') !== -1 || metrica.indexOf('cpa') !== -1) && minValor !== null && minValor <= 5) {
-      plan.criterios_exito.umbral_exito = 'Menor a $12 USD por lead primer mes (pixel frio), bajando a $8 USD al mes 3 cuando el algoritmo aprenda';
+    // CASO A: CPL/CPA - recalibrar si el umbral esta por DEBAJO del CPL realista de la
+    // categoria (promesa demasiado optimista que se incumple y quema la relacion). Antes
+    // solo cazaba minValor <= 5 y recalibraba a un $12 plano sin mirar la categoria.
+    var catRangeUmbral = cplRangeForCategory((brief && brief.categoria) || 'default');
+    var cplLo = catRangeUmbral[0], cplHi = catRangeUmbral[1];
+    if (esLatam && (metrica.indexOf('cpl') !== -1 || metrica.indexOf('cpa') !== -1) && minValor !== null && minValor < cplLo) {
+      plan.criterios_exito.umbral_exito = 'Menor a $' + cplHi + ' USD por lead primer mes (pixel frio), bajando a $' + cplLo + ' al mes 3 cuando el algoritmo aprenda';
       if (!plan.advertencias) plan.advertencias = [];
-      plan.advertencias.push('Umbral CPL ajustado: KIVO calibro el objetivo a $12 USD primer mes en lugar de un valor menor, porque un pixel nuevo en Meta necesita 50+ conversiones para aprender. Prometer CPL <$5 USD desde dia 1 es irreal y quema la relacion con el cliente cuando no se cumple.');
+      plan.advertencias.push('Umbral CPL ajustado al benchmark de la categoria ' + ((brief && brief.categoria) || 'general') + ': se calibro a $' + cplHi + ' USD primer mes / $' + cplLo + ' al mes 3. El umbral original ($' + minValor + ') estaba por debajo del CPL realista de la categoria ($' + cplLo + '-$' + cplHi + '), una promesa que se incumple en semana 3 y quema la relacion con el cliente.');
     }
     // CASO B: umbral es solo un numero sin formato (ej "10" o number 10) -> agregar unidad
     else if (minValor !== null) {
@@ -2774,8 +2825,17 @@ function responderTexto(field) {
   const val = input.value.trim();
 
   if (field === 'presupuesto') {
-    const num = parseFloat(val.replace(/[^0-9.]/g,''));
-    const finalVal = num > 100000 ? Math.round(num / 950) : Math.round(num);
+    // FIX v3.6 (Fix A): mismos modismos chilenos + moneda explicita que el parser LLM,
+    // para que el presupuesto sea coherente venga del brief o de esta pregunta.
+    var rawTxt = val.toLowerCase();
+    var baseNum = parseFloat(val.replace(/[^0-9.]/g,''));
+    if (!baseNum || isNaN(baseNum)) { baseNum = /\bmedi[oa]\b/.test(rawTxt) ? 0.5 : (/\bun[oa]?\b/.test(rawTxt) ? 1 : 0); }
+    var mult = (/\bpalos?\b|\bmillon|millones\b/.test(rawTxt)) ? 1000000 : ((/\blucas?\b|\bmil\b/.test(rawTxt)) ? 1000 : 1);
+    var monto = baseNum * mult;
+    var dice2USD = /(d\u00f3lar|dolar|d\u00f3lares|dolares|\busd\b|us\$|u\$)/.test(rawTxt);
+    var dice2CLP = /(\bpesos?\b|\bclp\b)/.test(rawTxt);
+    var es2USD = (dice2USD && !dice2CLP) ? true : ((dice2CLP && !dice2USD) ? false : !(monto > 100000));
+    const finalVal = monto > 0 ? (es2USD ? Math.round(monto) : Math.round(monto / 950)) : Math.round(parseFloat(val.replace(/[^0-9.]/g,'')) || 0);
     const el = document.getElementById('presupuesto');
     if (el) { el.value = finalVal; el.classList.add('autofilled'); el.classList.remove('field-missing'); formatPresupuesto(); }
   } else if (field === 'propuesta') {
@@ -4082,8 +4142,12 @@ DURACIONES: 2, 4, 6, 8
 G\u00c9NERO: Todos, Hombres, Mujeres (inferir del brief, default Todos)
 NSE: ABC1, C2, C3, D, Masivo. Inferir del brief con estas reglas en orden de prioridad: (1) Si el servicio tiene precio mensual, cuota, instalacion o suscripcion -> C2 (clase media con capacidad de pago). (2) Si es producto de consumo diario de bajo costo o necesidad basica masiva -> Masivo. (3) Si es servicio financiero, automotriz, inmobiliario o educacion superior -> ABC1/C2. (4) Si el brief menciona zonas rurales, regiones o ciudades intermedias con servicio de instalacion -> C2/C3. (5) DEFAULT para servicios con precio: C2. DEFAULT para productos masivos: Masivo. NUNCA poner Masivo para servicios que tienen costo de instalacion o suscripcion mensual.
 INTERESES: Compras, Finanzas, Tecnolog\u00eda, Deporte, Familia, Viajes, Gaming, Moda, Salud (inferir del brief, puede ser array vac\u00edo)
+PRESUPUESTO Y MONEDA (CRITICO - Chile usa modismos): devuelve "presupuesto" como NUMERO en la moneda que indica el brief, y "moneda" como "USD" o "CLP". NO conviertas tu mismo entre monedas; devuelve el numero en su moneda original y el sistema convierte.
+- Modismos de cantidad: "luca"/"lucas" = miles (x1.000); "palo"/"palos" = millon (x1.000.000); "gamba"/"gambas" = x100; "X mil" = x1.000; "X millon/millones" = x1.000.000. Ej: "2 lucas" = 2000; "500 lucas" = 500000; "un palo" = 1000000; "medio palo" = 500000.
+- Moneda: si el brief dice "dolar", "dolares", "USD", "US$" o "u$" -> moneda "USD". Si dice "peso", "pesos", "CLP", o no especifica moneda en un pais latinoamericano -> moneda "CLP". El modismo no define la moneda: "2 lucas de dolares" son DOLARES (USD 2000), no pesos.
+- Ejemplos completos: "2 lucas de dolares al mes" -> presupuesto 2000, moneda "USD". "500 lucas" (Chile) -> 500000, "CLP". "un palo y medio" -> 1500000, "CLP". "USD 3.000" -> 3000, "USD". "2 millones de pesos" -> 2000000, "CLP". "tengo 200 mil dolares" -> 200000, "USD".
 
-{"cliente":"nombre empresa","categoria":"categor\u00eda exacta","objetivo":"objetivo exacto","kpis":["kpi1","kpi2"],"presupuesto":50000,"pais":"pa\u00eds exacto","duracion":"4","edad":"audiencia exacta","genero":"Todos","nse":"Masivo","intereses":["Familia"],"competencia":"marcas competidoras si se mencionan o null","propuesta_valor":"qu\u00e9 hace diferente al producto, extraer del brief o null","contexto":"informaci\u00f3n relevante que NO cabe en otros campos: restricciones legales, tono de comunicaci\u00f3n, temporada, tipo de lanzamiento, contexto competitivo especial. NO incluir informaci\u00f3n geogr\u00e1fica ni de audiencia que ya est\u00e9 en otros campos. Si no hay contexto relevante, devolver null.","justificaciones":{"objetivo":"por qu\u00e9 este objetivo y no otro, m\u00e1ximo 2 oraciones","kpis":"por qu\u00e9 estos KPIs son los correctos para este brief","edad":"por qu\u00e9 este rango etario y no otro","duracion":"por qu\u00e9 esta duraci\u00f3n es la m\u00e1s adecuada","genero":"por qu\u00e9 este g\u00e9nero o por qu\u00e9 masivo","nse":"por qu\u00e9 este nivel socioecon\u00f3mico"}}`;
+{"cliente":"nombre empresa","categoria":"categor\u00eda exacta","objetivo":"objetivo exacto","kpis":["kpi1","kpi2"],"presupuesto":50000,"moneda":"USD o CLP segun el brief","pais":"pa\u00eds exacto","duracion":"4","edad":"audiencia exacta","genero":"Todos","nse":"Masivo","intereses":["Familia"],"competencia":"marcas competidoras si se mencionan o null","propuesta_valor":"qu\u00e9 hace diferente al producto, extraer del brief o null","contexto":"informaci\u00f3n relevante que NO cabe en otros campos: restricciones legales, tono de comunicaci\u00f3n, temporada, tipo de lanzamiento, contexto competitivo especial. NO incluir informaci\u00f3n geogr\u00e1fica ni de audiencia que ya est\u00e9 en otros campos. Si no hay contexto relevante, devolver null.","justificaciones":{"objetivo":"por qu\u00e9 este objetivo y no otro, m\u00e1ximo 2 oraciones","kpis":"por qu\u00e9 estos KPIs son los correctos para este brief","edad":"por qu\u00e9 este rango etario y no otro","duracion":"por qu\u00e9 esta duraci\u00f3n es la m\u00e1s adecuada","genero":"por qu\u00e9 este g\u00e9nero o por qu\u00e9 masivo","nse":"por qu\u00e9 este nivel socioecon\u00f3mico"}}`;
 
   try {
     const raw = await safeGroqCall(prompt, 1000, 2);
@@ -4130,7 +4194,18 @@ INTERESES: Compras, Finanzas, Tecnolog\u00eda, Deporte, Familia, Viajes, Gaming,
     const CLP_USD_RATE = 950;
     let wasCLP = false;
     let originalCLP = null;
-    if (parsed.presupuesto && parsed.presupuesto > 100000) {
+    // FIX v3.6 (Fix A): no dividir a ciegas por magnitud. Antes "> 100000 -> /950"
+    // convertia "2 lucas de dolares" (mal parseado como 200000) a $211, e incluso un
+    // presupuesto real de USD 200.000 lo habria roto. Ahora respetamos la moneda explicita.
+    var briefCur = String(brief || '').toLowerCase();
+    var diceUSD = /(d\u00f3lar|dolar|d\u00f3lares|dolares|\busd\b|us\$|u\$)/i.test(briefCur);
+    var diceCLP = /(\bpesos?\b|\bclp\b|chilenos?)/i.test(briefCur);
+    var monedaLLM = String((parsed && parsed.moneda) || '').toUpperCase();
+    var esUSD;
+    if (monedaLLM === 'USD' || (diceUSD && !diceCLP)) esUSD = true;
+    else if (monedaLLM === 'CLP' || (diceCLP && !diceUSD)) esUSD = false;
+    else esUSD = !(parsed.presupuesto && parsed.presupuesto > 100000); // sin pista: magnitud
+    if (parsed.presupuesto && parsed.presupuesto > 0 && !esUSD) {
       originalCLP = parsed.presupuesto;
       parsed.presupuesto = Math.round(parsed.presupuesto / CLP_USD_RATE);
       wasCLP = true;
