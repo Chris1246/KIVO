@@ -1686,7 +1686,7 @@ function sanitizePlanOutput(plan, brief) {
   // Patrones de numeros inventados. Si el copy menciona un numero de clientes,
   // anos, ventas o ratings, lo marcamos como sospechoso para que el freelancer
   // verifique antes de publicar.
-  var numerosInventadosRegex = /(?:\+\s*de\s*\d+|mas\s+de\s+\d+|\d+\.\d+\s+clientes|\d+\+?\s+(?:clientes|ventas|anos|estrellas))/i;
+  var numerosInventadosRegex = /(?:\+\s*de\s*\d+|m[a\u00e1]s\s+de\s+\d+|\d+\.\d+\s+clientes|\d+\+?\s+(?:clientes|ventas|a\u00f1os|anos|estrellas|autos|veh\u00edculos|vehiculos|unidades|productos|usuarios|familias|personas|casos)|\d+\+?\s+\w+\s+(?:vendidos|vendidas|entregados|entregadas|atendidos|atendidas|satisfechos|satisfechas|felices))/i;
 
   // FIX v3.4 M2: Detectar descuentos inventados. Si el brief no menciona "% off",
   // "descuento", "promocion", el LLM no deberia inventarlo. Lo limpiamos del copy.
@@ -1838,6 +1838,13 @@ function sanitizePlanOutput(plan, brief) {
         if (c.descripcion.length < 10) c.descripcion = origDesc;
       }
 
+      // FIX v3.6: CTA coherente con el canal. En un copy de plataforma WhatsApp, "Llama
+      // ya" / "Llamanos" contradice el canal (el lead entra por mensaje, no por llamada).
+      if (String(c.plataforma || '').toLowerCase().indexOf('whatsapp') !== -1 &&
+          c.cta && (/\bll[a\u00e1]ma/i.test(String(c.cta)) || /\bllame/i.test(String(c.cta)))) {
+        c.cta = 'Escr\u00edbenos por WhatsApp';
+      }
+
       if (warnings.length > 0) {
         c.nota = '[AVISO KIVO] ' + warnings.join(' | ') + (c.nota ? ' / ' + c.nota : '');
       }
@@ -1936,6 +1943,25 @@ function sanitizePlanOutput(plan, brief) {
       }
     }
     plan.criterios_exito.reglas_reasignacion = rulesArr;
+  }
+
+  // FIX v3.6 (completa Fix B): alinear la hipotesis CPL con el benchmark de la categoria,
+  // mismo criterio que el umbral. El LLM pone "CPL menor a $12" para una automotora cuyo
+  // CPL real es $20-35, contradiciendo al umbral recalibrado ($35) en la MISMA caja.
+  if (plan.criterios_exito && plan.criterios_exito.hipotesis) {
+    var hipTxt = String(plan.criterios_exito.hipotesis);
+    var hipLow = hipTxt.toLowerCase();
+    if (hipLow.indexOf('cpl') !== -1 || hipLow.indexOf('cpa') !== -1) {
+      var catRangeHip = cplRangeForCategory((brief && brief.categoria) || 'default');
+      var hipLo = catRangeHip[0], hipHi = catRangeHip[1];
+      var hipMatch = hipTxt.match(/\$?\s*(\d+(?:\.\d+)?)/);
+      if (hipMatch) {
+        var hipVal = parseFloat(hipMatch[1]);
+        if (hipVal > 0 && hipVal < hipLo) {
+          plan.criterios_exito.hipotesis = hipTxt.replace(/\$?\s*\d+(?:\.\d+)?\s*(?:usd)?/i, '$' + hipHi + ' USD');
+        }
+      }
+    }
   }
 
   // ---- 3) Calibrar y formatear umbral_exito ----
