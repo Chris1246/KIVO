@@ -1,5 +1,6 @@
 
 
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -1517,6 +1518,52 @@ window.addEventListener('unhandledrejection', function(event) {
 //  1. Detectar copies con cliches o numeros inventados -> agregar tip de aviso
 //  2. Forzar minimo 3 reglas en criterios_exito.reglas_reasignacion
 //  3. Calibrar umbral_exito CPL para realidades de pixel frio en Chile
+// FIX v3.6 (Bug 3): construir copies limpios desde el diferencial cuando hay que
+// reemplazar un numero inventado. El reemplazo viejo cortaba el PV a las primeras
+// 7 palabras (quedaba "Examen visual gratis con cada compra y", terminado en "y") y
+// repetia el mismo texto en titular y descripcion. Ahora dividimos el PV en clausulas
+// por conectores, limpiamos la cola, y damos titular y descripcion COMPLEMENTARIOS.
+function kivoLimpiarCola(s) {
+  s = String(s || '').replace(/\s+/g, ' ').trim();
+  var re = /[\s,;:.]*\b(?:y|e|o|u|con|de|del|la|el|los|las|en|a|al|para|por|que|su|tu|sus|tus|un|una|sin)\s*$/i;
+  var prev;
+  do { prev = s; s = s.replace(re, '').replace(/[\s,;:.]+$/, '').trim(); } while (s !== prev && s.length > 0);
+  return s;
+}
+function kivoCap(s) { s = String(s || ''); return s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+function kivoRecortar(s, max) {
+  s = String(s || '');
+  if (s.length <= max) return s;
+  var corte = s.substring(0, max);
+  var sp = corte.lastIndexOf(' ');
+  if (sp > Math.floor(max * 0.3)) corte = corte.substring(0, sp);
+  return kivoLimpiarCola(corte);
+}
+function construirHooksDesdePV(pvText) {
+  var pv = String(pvText || '').replace(/\s+/g, ' ').trim();
+  if (pv.length < 6) return { titular: 'Atenci\u00f3n local cercana', descripcion: 'Cont\u00e1ctanos por WhatsApp' };
+  var clausulas = pv.split(/\s+y\s+|\s+e\s+|,\s*|\s*;\s*|\s+adem\u00e1s\s+|\s+tambi\u00e9n\s+/i);
+  var limpias = [];
+  for (var i = 0; i < clausulas.length; i++) {
+    var c = kivoLimpiarCola(String(clausulas[i] || '').replace(/^[\s,;:.]+/, ''));
+    if (c.length >= 4) limpias.push(c);
+  }
+  if (limpias.length === 0) limpias.push(kivoLimpiarCola(pv));
+  var titular = kivoCap(kivoRecortar(limpias[0], 42));
+  var descripcion;
+  if (limpias.length > 1) {
+    descripcion = kivoCap(kivoRecortar(limpias.slice(1).join(', '), 90));
+  } else {
+    descripcion = 'Cont\u00e1ctanos por WhatsApp y agenda hoy';
+  }
+  // Evitar duplicacion entre titular y descripcion
+  var tLow = titular.toLowerCase(), dLow = descripcion.toLowerCase();
+  if (!descripcion || dLow === tLow || dLow.indexOf(tLow) === 0 || tLow.indexOf(dLow) === 0) {
+    descripcion = 'Cont\u00e1ctanos por WhatsApp y agenda hoy';
+  }
+  return { titular: titular, descripcion: descripcion };
+}
+
 function sanitizePlanOutput(plan, brief) {
   if (!plan) return plan;
   // FIX v3.4 polish: defensa profunda contra tipos hostiles del LLM.
@@ -1680,38 +1727,21 @@ function sanitizePlanOutput(plan, brief) {
       var titularTieneNumeroFalso = numerosInventadosRegex.test(origTitular);
       var descTieneNumeroFalso = numerosInventadosRegex.test(origDesc);
       if (titularTieneNumeroFalso || descTieneNumeroFalso) {
-        // Extraer un fragmento usable del diferencial/PV del brief
-        var hookReemplazo = '';
-        var pvBrief = String((brief && brief.propuestaValor) || '');
-        var ctxBrief = String((brief && brief.contexto) || '');
-        // Buscar terminos concretos del brief que sirvan como prueba real (no numero)
-        var fuenteHook = pvBrief || ctxBrief;
-        if (fuenteHook && fuenteHook.length > 10) {
-          // Tomar las primeras 6-8 palabras de algo concreto
-          var palabras = fuenteHook.replace(/\s+/g, ' ').trim().split(' ').slice(0, 7);
-          hookReemplazo = palabras.join(' ');
-          // Capitalizar
-          if (hookReemplazo.length > 0) {
-            hookReemplazo = hookReemplazo.charAt(0).toUpperCase() + hookReemplazo.slice(1);
-          }
-        }
-        // Fallback si no hay PV/contexto sustantivo
-        if (!hookReemplazo || hookReemplazo.length < 12) {
-          hookReemplazo = 'Atencion local cercana';
-        }
-        // Construir mensaje de reemplazo segun donde estaba el numero
+        // FIX v3.6 (Bug 3): construir titular y descripcion COMPLEMENTARIOS desde el
+        // diferencial, sin cortar en conector ni duplicar texto.
+        var fuenteHook = String((brief && brief.propuestaValor) || (brief && brief.contexto) || '');
+        var hooksLimpios = construirHooksDesdePV(fuenteHook);
         var avisoReemplazo = 'Numero sin verificar reemplazado por hook basado en tu diferencial - revisa antes de publicar';
         if (titularTieneNumeroFalso) {
-          c.titular = hookReemplazo;
+          c.titular = hooksLimpios.titular;
         }
         if (descTieneNumeroFalso) {
-          // Para descripcion: usar version mas larga si es posible
-          var palabrasDesc = (pvBrief || ctxBrief || '').replace(/\s+/g, ' ').trim().split(' ').slice(0, 12);
-          var descReemplazo = palabrasDesc.length >= 5 ? palabrasDesc.join(' ') : 'Conoce nuestro diferencial real';
-          if (descReemplazo.length > 0) {
-            descReemplazo = descReemplazo.charAt(0).toUpperCase() + descReemplazo.slice(1);
-          }
-          c.descripcion = descReemplazo;
+          c.descripcion = hooksLimpios.descripcion;
+        }
+        // Si ambos tenian numero, garantizar que titular y descripcion no queden iguales
+        if (titularTieneNumeroFalso && descTieneNumeroFalso &&
+            String(c.titular || '').toLowerCase() === String(c.descripcion || '').toLowerCase()) {
+          c.descripcion = 'Cont\u00e1ctanos por WhatsApp y agenda hoy';
         }
         warnings.push(avisoReemplazo);
       }
@@ -2222,22 +2252,22 @@ function calcDeduplicatedReach(platforms) {
 // NSE no existe como campo en Meta/Google. Esta tabla traduce NSE a targeting real.
 var NSE_TACTICA = {
   'ABC1': {
-    meta: 'Dispositivos iPhone/iPad + comportamientos de compra premium + c\u00f3digos postales de alto ingreso + intereses financieros',
+    meta: 'Dispositivos iPhone/iPad de gama alta + comportamiento de compradores premium + comunas / c\u00f3digos postales de alto ingreso',
     google: 'Keywords de marcas premium + targeting por ingresos del hogar alto + \u00e1reas geogr\u00e1ficas de alto poder adquisitivo',
     nota: 'Audiencia peque\u00f1a y cara. CPM m\u00e1s alto pero mayor tasa de conversi\u00f3n en productos de precio elevado.'
   },
   'C2': {
-    meta: 'Smartphones Android mid-range + intereses de servicios del hogar y finanzas + zonas de expansi\u00f3n urbana',
+    meta: 'Smartphones Android de gama media + comunas de clase media + comportamiento de compra orientado a valor y calidad',
     google: 'Keywords de valor/calidad + targeting geogr\u00e1fico por comunas clase media + ingresos medios-altos',
     nota: 'Segmento con mayor capacidad de decisi\u00f3n. Ideal para servicios con cuota mensual o instalaci\u00f3n.'
   },
   'C3': {
-    meta: 'Smartphones entrada + intereses de utilidad y hogar + zonas periurbanas + b\u00fasqueda de ofertas',
+    meta: 'Smartphones de entrada + comunas de clase media-baja + alta sensibilidad al precio y b\u00fasqueda de ofertas',
     google: 'Keywords de precio y ahorro + targeting geogr\u00e1fico amplio + comunas clase media-baja',
     nota: 'Audiencia grande y econ\u00f3mica. Alta sensibilidad al precio. Mejor para servicios de bajo costo.'
   },
   'D': {
-    meta: 'Targeting geogr\u00e1fico por zonas perif\u00e9ricas + intereses de necesidades b\u00e1sicas',
+    meta: 'Targeting geogr\u00e1fico por comunas perif\u00e9ricas y amplio + foco en accesibilidad de precio',
     google: 'Keywords gen\u00e9ricas de necesidad + targeting geogr\u00e1fico muy amplio',
     nota: 'Audiencia muy grande y barata. Baja tasa de conversi\u00f3n para servicios con costo de instalaci\u00f3n.'
   },
@@ -4479,7 +4509,25 @@ async function generarPlan() {
   var nseActiveChip = document.querySelector('#nseChips .chip.active');
   if (nseActiveChip) nseSelected = nseActiveChip.textContent.trim();
   var nseTactico = NSE_TACTICA[nseSelected] || NSE_TACTICA['Masivo'];
-  var nseContexto = 'NSE ' + nseSelected + ' - Meta: ' + nseTactico.meta + ' | Google: ' + nseTactico.google;
+  // FIX v3.6 (Bug 2): el NSE solo aporta SE\u00d1AL SOCIOECON\u00d3MICA (dispositivo, comuna,
+  // poder de compra). Los INTERESES tem\u00e1ticos del targeting deben venir del RUBRO del
+  // cliente, no de una receta gen\u00e9rica. Antes el NSE inyectaba "servicios del hogar y
+  // finanzas" para CUALQUIER rubro y el LLM lo calcaba (una \u00f3ptica targeteando finanzas).
+  var INTERESES_POR_CATEGORIA = {
+    'Salud y Farma': 'salud y bienestar, cuidado personal, salud visual y cuidado de la vista, vida saludable, prevenci\u00f3n y chequeos',
+    'Servicios / Utilities': 'hogar y mejoras del hogar, tecnolog\u00eda de consumo, eficiencia y ahorro en servicios del hogar',
+    'Banca y Finanzas': 'finanzas personales, ahorro e inversi\u00f3n, tarjetas y cr\u00e9dito, educaci\u00f3n financiera',
+    'Inmobiliario': 'compra y arriendo de vivienda, decoraci\u00f3n del hogar, inversi\u00f3n inmobiliaria, mudanza',
+    'Automotriz': 'autom\u00f3viles y marcas de autos, mantenimiento y accesorios, autos 0km y usados',
+    'Educaci\u00f3n': 'educaci\u00f3n y cursos, desarrollo profesional, idiomas, preparaci\u00f3n acad\u00e9mica',
+    'Retail / E-commerce': 'compras online, ofertas y descuentos, intereses del producto seg\u00fan el rubro del brief',
+    'default': 'intereses directamente relacionados al producto del brief'
+  };
+  var categoriaIntereses = INTERESES_POR_CATEGORIA[categoria] || INTERESES_POR_CATEGORIA['default'];
+  var interesesParaTargeting = interesesEspecificos ? interesesEspecificos : categoriaIntereses;
+  var nseContexto = 'NSE ' + nseSelected + ' = SE\u00d1AL SOCIOECON\u00d3MICA (no es un inter\u00e9s tem\u00e1tico) - Meta: ' + nseTactico.meta + ' | Google: ' + nseTactico.google +
+    '. INTERESES del targeting (derivados del rubro "' + categoria + '"' + (interesesEspecificos ? ' y de lo que ingres\u00f3 el usuario' : '') + '): ' + interesesParaTargeting +
+    '. REGLA DURA DE AUDIENCIA: los intereses tem\u00e1ticos del targeting DEBEN pertenecer al rubro del cliente. PROHIBIDO mencionar intereses de otro rubro (ej: NUNCA "servicios del hogar y finanzas" ni "zonas de expansi\u00f3n urbana" para una \u00f3ptica o un negocio de salud). El NSE solo aporta nivel socioecon\u00f3mico (dispositivo, comuna, poder de compra), jam\u00e1s el inter\u00e9s tem\u00e1tico.';
 
   if (!cliente || !objetivo || !presupuesto || !categoria || kpiChips.length === 0) {
     setHasTried();
@@ -5902,6 +5950,32 @@ function renderResult(plan, b) {
     realisticCPL = '$' + cplRange[0] + '\u2013$' + cplRange[1] + ' USD/lead';
   }
 
+  // FIX v3.6 (Bug 1): UNIFICAR la proyeccion. El hero muestra el numero CPL-based
+  // (presupuesto / CPL). Antes la seccion "PROYECCION POR KPI" mostraba texto libre del
+  // LLM con OTRO numero ("100-130 mensajes... 5-20 leads"), contradiciendo al hero. Eso
+  // mata la credibilidad: el producto vende proyecciones y se contradecia a si mismo.
+  // Ahora reescribimos el texto del KPI de leads con EL MISMO numero del hero. Una sola
+  // definicion de "lead/conversacion" en todo el documento.
+  var ctaWhatsApp = false;
+  for (var pwi = 0; pwi < plan.plataformas.length; pwi++) {
+    if (String(plan.plataformas[pwi].nombre || '').toLowerCase().indexOf('whatsapp') !== -1) { ctaWhatsApp = true; break; }
+  }
+  var leadsLabelHero = ctaWhatsApp ? 'leads / conversaciones' : 'leads estimados';
+  if (realisticLeads !== '-' && plan.kpi_proyecciones && plan.kpi_proyecciones.length) {
+    var unidadLead = ctaWhatsApp ? 'conversaciones de WhatsApp iniciadas' : 'leads estimados';
+    var cplTexto = '$' + cplRange[0] + '\u2013$' + cplRange[1] + ' USD';
+    for (var kpx = 0; kpx < plan.kpi_proyecciones.length; kpx++) {
+      var knLow = String(plan.kpi_proyecciones[kpx].kpi || '').toLowerCase();
+      if (knLow.indexOf('lead') !== -1 || knLow.indexOf('mensaje') !== -1 ||
+          knLow.indexOf('whatsapp') !== -1 || knLow.indexOf('conversaci') !== -1 ||
+          knLow.indexOf('cpl') !== -1 || knLow.indexOf('cpa') !== -1) {
+        plan.kpi_proyecciones[kpx].proyeccion =
+          realisticLeads + ' ' + unidadLead + ' (CPL ' + cplTexto + ', presupuesto / CPL benchmark LATAM 2025) - es el mismo numero del encabezado. ' +
+          'Las ventas cerradas son una fraccion de ese numero (tasa tipica 5-15% en retail) y dependen de tu tiempo de respuesta, precio y atencion, no de la pauta digital.';
+      }
+    }
+  }
+
   const pills = plan.plataformas.map(function(p,i) { return `
     <div class="p-pill" data-nombre="${p.nombre}" onclick="togglePlatform('${p.nombre}')">
       <span class="pill-num">${i+1}</span>
@@ -6077,7 +6151,7 @@ function renderResult(plan, b) {
       <div class="hero-num-divider"></div>
       <div class="hero-num">
         <div class="hero-num-value hero-leads" id="heroLeads">${realisticLeads}</div>
-        <div class="hero-num-label">leads estimados</div>
+        <div class="hero-num-label">${leadsLabelHero}</div>
         <div class="hero-num-sub">${realisticCPL}</div>
       </div>
       <div class="hero-num-divider"></div>
