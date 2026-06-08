@@ -1606,9 +1606,25 @@ function sanitizePlanOutput(plan, brief) {
   // Eso rompe la UI hero ("0K personas alcanzadas") y destruye la credibilidad.
   // Calculamos desde CPM real, frecuencia tipica, y presupuesto.
   if (plan.plataformas && plan.plataformas.length) {
+    // FIX v3.6: el recalculo de impresiones se apoya en presupuesto_plataforma. El LLM a
+    // veces llena solo el porcentaje y deja presupuesto en 0 -> impresiones=0 -> "0K
+    // personas alcanzadas". Derivamos el presupuesto por plataforma de porcentaje x total
+    // (que KIVO ya conoce) antes de calcular impresiones. Nunca dependemos del LLM aca.
+    var presupTotalPlan = parseFloat(brief && brief.presupuesto) || 0;
     plan.plataformas = plan.plataformas.map(function(p) {
       if (!p) return p;
       var presupP = parseFloat(p.presupuesto) || 0;
+      if (presupP <= 0 && presupTotalPlan > 0) {
+        var pct = parseFloat(p.porcentaje) || 0;
+        if (pct > 0) {
+          presupP = Math.round(presupTotalPlan * (pct / 100));
+        } else if (plan.plataformas.length > 0) {
+          // ultimo recurso: el LLM no dio ni presupuesto ni porcentaje -> reparto parejo
+          presupP = Math.round(presupTotalPlan / plan.plataformas.length);
+          p.porcentaje = Math.round(100 / plan.plataformas.length);
+        }
+        if (presupP > 0) p.presupuesto = presupP;
+      }
       var cpm = parseFloat(p.cpm_estimado) || 0;
       var imp = parseFloat(p.impresiones) || 0;
       var freq = parseFloat(p.frecuencia) || 0;
