@@ -1953,7 +1953,7 @@ function sanitizePlanOutput(plan, brief) {
         if (mNum) {
           var triggerVal = parseFloat(mNum[1]);
           if (triggerVal > 0 && triggerVal < triggerMin) {
-            rulesArr[rri].si = siTxt.replace(/\$?\s*\d+(?:\.\d+)?\s*(?:usd)?/i, '$' + triggerMin + ' USD');
+            rulesArr[rri].si = siTxt.replace(/\$?\s*\d+(?:\.\d+)?(?:\s*usd)?/i, '$' + triggerMin + ' USD');
           }
         }
       }
@@ -1974,7 +1974,7 @@ function sanitizePlanOutput(plan, brief) {
       if (hipMatch) {
         var hipVal = parseFloat(hipMatch[1]);
         if (hipVal > 0 && hipVal < hipLo) {
-          plan.criterios_exito.hipotesis = hipTxt.replace(/\$?\s*\d+(?:\.\d+)?\s*(?:usd)?/i, '$' + hipHi + ' USD');
+          plan.criterios_exito.hipotesis = hipTxt.replace(/\$?\s*\d+(?:\.\d+)?(?:\s*usd)?/i, '$' + hipHi + ' USD');
         }
       }
     }
